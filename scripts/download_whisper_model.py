@@ -38,10 +38,14 @@ VALID_SIZES = ("tiny", "base", "small", "medium", "large-v3")
 
 
 def get_model_dir() -> str:
-    """与 whisper_service.get_model_dir 保持一致"""
-    docker_path = "/data/models"
-    if os.path.isdir(docker_path):
-        return docker_path
+    """与 whisper_service.get_model_dir 保持一致
+
+    注意：不要用 os.path.isdir("/data/models") 判断 —— 挂载卷 ./data:/data
+    会覆盖镜像内预建的 /data 目录，首次启动时宿主机 ./data/models 尚未创建，
+    /data/models 不存在会导致误判回退到非持久化的相对路径。
+    """
+    if os.path.isdir("/data"):
+        return "/data/models"
     return "./data/models"
 
 

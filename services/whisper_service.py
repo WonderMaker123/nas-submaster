@@ -132,10 +132,17 @@ def _check_hf_endpoint_compat() -> None:
 
 
 def get_model_dir() -> str:
-    """获取模型存储目录（Docker 用 /data/models，本地开发用 ./data/models）"""
-    docker_path = "/data/models"
-    if os.path.isdir(docker_path):
-        return docker_path
+    """获取模型存储目录（Docker 用 /data/models，本地开发用 ./data/models）
+
+    注意：不要用 os.path.isdir("/data/models") 判断 —— 挂载卷 ./data:/data
+    会覆盖镜像内预建的 /data 目录，首次启动时宿主机 ./data/models 尚未创建，
+    /data/models 不存在会导致误判回退到非持久化的相对路径 ./data/models
+    （实际写到容器内 /app/data/models，重建即丢）。
+
+    正确判断：只要 /data 目录存在即视为 Docker 持久化卷环境，用 /data/models。
+    """
+    if os.path.isdir("/data"):
+        return "/data/models"
     return "./data/models"
 
 
