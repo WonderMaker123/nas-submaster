@@ -73,5 +73,5 @@ jobs:
           push: true
           # 替换成你的 Docker Hub 用户名和仓库名
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/nas-subtitle-manager:latest
-            ${{ secrets.DOCKER_USERNAME }}/nas-subtitle-manager:v${{ steps.version.outputs.version }}
+            ${{ secrets.DOCKER_USERNAME }}/zimu:latest
+            ${{ secrets.DOCKER_USERNAME }}/zimu:v${{ steps.version.outputs.version }}
