@@ -418,6 +418,7 @@ class WhisperService:
             kwargs = {
                 "device": dev,
                 "compute_type": ct,
+                "cpu_threads": os.cpu_count() or 4,
             }
             if effective_download_root:
                 kwargs["download_root"] = effective_download_root
@@ -527,14 +528,18 @@ class WhisperService:
         if progress_callback:
             progress_callback("extract", 0.0, f"开始提取字幕...")
 
-        # 准备转录参数（直接读取原生音视频，关闭激进过滤，保证对白完整）
+        # 准备转录参数（恢复为原版高性能参数）
         transcribe_params = {
             'audio': video_path,
             'beam_size': 5,
-            'vad_filter': False,
-            'word_timestamps': True,
-            'condition_on_previous_text': False,
-            'temperature': [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            'best_of': 5,
+            'vad_filter': True,
+            'vad_parameters': dict(
+                min_silence_duration_ms=500,
+                speech_pad_ms=250,
+            ),
+            'condition_on_previous_text': True,
+            'temperature': 0.0,
         }
 
         # 如果不是自动检测，指定语言
