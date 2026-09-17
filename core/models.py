@@ -197,7 +197,10 @@ class TranslationConfig:
     enabled: bool = True  # v1.8.2+: 默认开启
     target_language: str = 'zh'
     use_embedded_subtitle: bool = True  # 优先使用内置字幕（如果有）
+    min_embedded_subtitle_lines: int = 10  # 内置字幕健康检查最少条数，少于此值自动回退Whisper
+    check_embedded_coverage: bool = True  # 是否检查内置字幕时间跨度覆盖率
     max_lines_per_batch: int = 500
+    max_concurrent_batches: int = 3  # 批量翻译并发数（1=串行，2~5=并发加速）
     max_retries: int = 3
     timeout: int = 600
 
@@ -206,7 +209,10 @@ class TranslationConfig:
             'enabled': self.enabled,
             'target_language': self.target_language,
             'use_embedded_subtitle': self.use_embedded_subtitle,
+            'min_embedded_subtitle_lines': self.min_embedded_subtitle_lines,
+            'check_embedded_coverage': self.check_embedded_coverage,
             'max_lines_per_batch': self.max_lines_per_batch,
+            'max_concurrent_batches': self.max_concurrent_batches,
             'max_retries': self.max_retries,
             'timeout': self.timeout
         }
@@ -216,13 +222,23 @@ class TranslationConfig:
 class ExportConfig:
     """导出配置"""
     formats: List[str] = field(default_factory=lambda: ['srt'])
+    generate_bilingual: bool = False  # 是否生成中外双语字幕
+    naming_standard: str = 'standard'  # 命名规范: 'standard' (.zh-CN.srt), 'emby' (.chi.default.srt), 'simple' (.zh.srt)
 
     def to_dict(self) -> Dict:
-        return {'formats': self.formats}
+        return {
+            'formats': self.formats,
+            'generate_bilingual': self.generate_bilingual,
+            'naming_standard': self.naming_standard
+        }
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'ExportConfig':
-        return cls(formats=data.get('formats', ['srt']))
+        return cls(
+            formats=data.get('formats', ['srt']),
+            generate_bilingual=data.get('generate_bilingual', False),
+            naming_standard=data.get('naming_standard', 'standard')
+        )
 
 
 @dataclass

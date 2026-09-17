@@ -444,9 +444,28 @@ def render_settings_dialog():
         use_embedded = st.toggle(
             "优先使用内置字幕（如果有）",
             value=config.translation.use_embedded_subtitle,
-            help="开启后，系统会优先使用视频内置字幕进行翻译，速度更快"
+            help="开启后，若视频包含内嵌字幕轨且通过完整度检查，将优先提取内置字幕进行翻译，速度更快；关闭则强制调用 Whisper 从音频重新转写"
         )
         trans_changes['use_embedded_subtitle'] = use_embedded
+
+        if use_embedded:
+            min_lines = st.number_input(
+                "内置字幕健康检查最小条数",
+                min_value=1, max_value=1000, step=5,
+                value=config.translation.min_embedded_subtitle_lines,
+                help="若提取出的内置字幕条数少于此阈值（例如前几行片头或残缺字幕），将判定为提取失败并自动回退到 Whisper 音频转写"
+            )
+            trans_changes['min_embedded_subtitle_lines'] = min_lines
+
+            check_cov = st.checkbox(
+                "开启内置字幕覆盖率检查",
+                value=config.translation.check_embedded_coverage,
+                help="如果提取出的内置字幕最后一行的结束时间远小于视频总时长（小于15%且视频>3分钟），判定字幕截断并自动回退到 Whisper"
+            )
+            trans_changes['check_embedded_coverage'] = check_cov
+        else:
+            trans_changes['min_embedded_subtitle_lines'] = config.translation.min_embedded_subtitle_lines
+            trans_changes['check_embedded_coverage'] = config.translation.check_embedded_coverage
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -463,6 +482,14 @@ def render_settings_dialog():
             help=batch_help
         )
         trans_changes['max_lines_per_batch'] = batch_size
+
+        concurrent_batches = st.slider(
+            "批量翻译并发数 (并发请求加速)",
+            min_value=1, max_value=8, step=1,
+            value=getattr(config.translation, 'max_concurrent_batches', 3),
+            help="当字幕行数较多分为多个批次时，开启并发请求可将翻译时间缩短 60%~75%。默认为 3 并发。"
+        )
+        trans_changes['max_concurrent_batches'] = concurrent_batches
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -518,6 +545,28 @@ def render_settings_dialog():
             new_formats = ['srt'] # default fallback
             
         export_changes['export_formats'] = new_formats
+
+        st.markdown("---")
+        st.markdown("**进阶导出特性**")
+        gen_bilingual = st.checkbox(
+            "自动生成中外双语字幕 (.bilingual.srt)",
+            value=getattr(config.export, 'generate_bilingual', False),
+            help="当翻译完成时，自动将原语言字幕与翻译语言字幕合并为双语字幕，方便双语观看"
+        )
+        export_changes['generate_bilingual'] = gen_bilingual
+
+        naming_std = st.selectbox(
+            "媒体服务器命名规范",
+            options=["standard", "emby", "simple"],
+            index=["standard", "emby", "simple"].index(getattr(config.export, 'naming_standard', 'standard')) if getattr(config.export, 'naming_standard', 'standard') in ["standard", "emby", "simple"] else 0,
+            format_func=lambda x: {
+                "standard": "标准规范 (movie.zh-CN.srt - 推荐 Jellyfin/Plex)",
+                "emby": "Emby 规范 (movie.chi.default.srt)",
+                "simple": "简易规范 (movie.zh.srt)"
+            }.get(x, x),
+            help="适配不同家庭媒体服务器的刮削与字幕识别规则"
+        )
+        export_changes['naming_standard'] = naming_std
 
     # 7. 自动扫描
     with tab_scan:
@@ -614,11 +663,17 @@ def _save_full_config(mgr, w_changes, m_changes, t_changes, e_changes, p_changes
     config.translation.enabled = t_changes['enable_translation']
     config.translation.target_language = t_changes['target_language']
     config.translation.use_embedded_subtitle = t_changes.get('use_embedded_subtitle', True)
+    config.translation.min_embedded_subtitle_lines = t_changes.get('min_embedded_subtitle_lines', 10)
+    config.translation.check_embedded_coverage = t_changes.get('check_embedded_coverage', True)
     config.translation.max_lines_per_batch = t_changes['max_lines_per_batch']
     config.translation.timeout = t_changes.get('timeout', 600)
 
     # Export
     config.export.formats = e_changes['export_formats']
+    if 'generate_bilingual' in e_changes:
+        config.export.generate_bilingual = e_changes['generate_bilingual']
+    if 'naming_standard' in e_changes:
+        config.export.naming_standard = e_changes['naming_standard']
 
     # Prompt Templates
     if 'prompt_templates' in p_changes:

@@ -99,12 +99,16 @@ def download_model(model_size: str, model_dir: str) -> bool:
 
 def main():
     # 解析参数
-    if len(sys.argv) > 1:
-        sizes = [s.strip() for s in sys.argv[1].split(",") if s.strip()]
-    else:
-        sizes = ["base"]  # 默认下载 base
+    # 用法：python scripts/download_whisper_model.py [model_sizes] [output_dir]
+    sizes = ["tiny"]
+    output_dir = None
 
-    model_dir = get_model_dir()
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+        sizes = [s.strip() for s in sys.argv[1].split(",") if s.strip()]
+    if len(sys.argv) > 2 and not sys.argv[2].startswith("-"):
+        output_dir = sys.argv[2]
+
+    model_dir = output_dir or get_model_dir()
     Path(model_dir).mkdir(parents=True, exist_ok=True)
 
     print(f"=== Whisper 模型预下载 ===")

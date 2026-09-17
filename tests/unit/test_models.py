@@ -219,6 +219,32 @@ class TestSubtitleTrack:
         assert restored.language == "en"
 
 
+class TestTranslationConfig:
+    def test_round_trip(self):
+        cfg = TranslationConfig(
+            enabled=True,
+            target_language="zh",
+            use_embedded_subtitle=True,
+            min_embedded_subtitle_lines=15,
+            check_embedded_coverage=True,
+            max_lines_per_batch=50,
+        )
+        d = cfg.to_dict()
+        assert d['use_embedded_subtitle'] is True
+        assert d['min_embedded_subtitle_lines'] == 15
+        assert d['check_embedded_coverage'] is True
+        restored = TranslationConfig.from_dict(d)
+        assert restored.use_embedded_subtitle is True
+        assert restored.min_embedded_subtitle_lines == 15
+        assert restored.check_embedded_coverage is True
+
+    def test_defaults(self):
+        cfg = TranslationConfig.from_dict({})
+        assert cfg.use_embedded_subtitle is True
+        assert cfg.min_embedded_subtitle_lines == 10
+        assert cfg.check_embedded_coverage is True
+
+
 # ============================================================================
 # Constants
 # ============================================================================

@@ -7,12 +7,17 @@
 2. 智能分段策略（短视频整体翻译，长视频分场景）
 3. 完善错误处理（不再静默失败）
 4. 支持翻译质量检测和重试
+5. 支持断点续译草稿缓存（中断/失败后重试不重译已完成批次，节省 token）
 """
 
 import json
+import os
+import re
 import time
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 from openai import OpenAI
 from dataclasses import dataclass
 
@@ -28,6 +33,7 @@ class TranslationConfig:
     target_language: str
     source_language: str = 'auto'
     max_lines_per_batch: int = 500  # 每批最多翻译多少行
+    max_concurrent_batches: int = 3  # 最大并发批次请求数
     max_retries: int = 3
     timeout: int = 600
 
@@ -62,7 +68,7 @@ class SubtitleTranslator:
         'es': '西班牙语 (Spanish)'
     }
     
-    def __init__(self, config: TranslationConfig, progress_callback=None, prompt_template=None):
+    def __init__(self, config: TranslationConfig, progress_callback=None, prompt_template=None, checkpoint_path: Optional[str] = None):
         """
         初始化翻译器
 
@@ -70,10 +76,12 @@ class SubtitleTranslator:
             config: 翻译配置
             progress_callback: 进度回调函数 (current, total, message)
             prompt_template: 提示词模板，如果为 None 则使用内置默认提示词
+            checkpoint_path: 断点续译草稿文件路径（可选，存在则启用断点暂存）
         """
         self.config = config
         self.progress_callback = progress_callback
         self.prompt_template = prompt_template
+        self.checkpoint_path = checkpoint_path
 
         # 初始化 OpenAI 客户端
         # Ollama 不需要 API Key，但 openai 库要求非空值
@@ -201,23 +209,36 @@ Now output the COMPLETE JSON array (no extra text, no abbreviations):"""
         Raises:
             ParseError: 解析失败
         """
-        # 清理响应（移除可能的 markdown 代码块）
+        # 1. 过滤思考模型（如 DeepSeek-R1, Qwen-Max-Thinking, Kimi-k1.5 等）的 <think> 标签内容
+        if '<think>' in response:
+            response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
+        elif '</think>' in response:
+            # 某些模型可能省略 <think> 直接返回结尾 </think>
+            response = response.split('</think>', 1)[-1].strip()
+
+        # 2. 清理 markdown 代码块格式 (```json ... ```)
         response = response.strip()
-        if response.startswith("```"):
-            # 移除 ```json 或 ``` 开头
-            lines = response.split('\n')
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            response = '\n'.join(lines)
+        if "```" in response:
+            # 使用正则优先提取代码块内的 json 数组
+            match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', response, re.DOTALL)
+            if match:
+                response = match.group(1).strip()
+            else:
+                lines = response.split('\n')
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                response = '\n'.join(lines).strip()
         
-        # 移除可能的前缀文本（如 "好的，以下是翻译："）
-        if not response.strip().startswith('['):
-            # 找到第一个 [ 的位置
-            bracket_pos = response.find('[')
-            if bracket_pos > 0:
-                response = response[bracket_pos:]
+        # 3. 截取首尾匹配的 JSON 数组（避免开头问候语或末尾附带说明文本）
+        bracket_start = response.find('[')
+        bracket_end = response.rfind(']')
+        if bracket_start != -1 and bracket_end != -1 and bracket_end > bracket_start:
+            response = response[bracket_start:bracket_end + 1]
+        elif bracket_start != -1:
+            # 尾部截断，取到结尾
+            response = response[bracket_start:]
         
         # 检查是否包含省略符号 "..."
         if '...' in response and '"...' not in response:
@@ -379,13 +400,41 @@ Now output the COMPLETE JSON array (no extra text, no abbreviations):"""
 
         # 不应该到达这里
         raise last_error or TranslationError("翻译失败，原因未知")
-    
+
+    def _load_checkpoint(self) -> Dict[int, List[dict]]:
+        """从断点草稿中加载已翻译完成的批次"""
+        if not self.checkpoint_path or not os.path.exists(self.checkpoint_path):
+            return {}
+        try:
+            with open(self.checkpoint_path, 'r', encoding='utf-8') as f:
+                raw_data = json.load(f)
+                return {int(k): v for k, v in raw_data.items()}
+        except Exception as e:
+            print(f"[翻译断点] 加载草稿失败，将重新翻译: {e}")
+            return {}
+
+    def _save_checkpoint_batch(self, b_num: int, translated_batch: List[SubtitleEntry], checkpoint_lock: threading.Lock):
+        """保存单个已完成批次到断点草稿文件中"""
+        if not self.checkpoint_path:
+            return
+        with checkpoint_lock:
+            try:
+                current_data = self._load_checkpoint()
+                current_data[b_num] = [
+                    {"index": e.index, "timecode": e.timecode, "text": e.text}
+                    for e in translated_batch
+                ]
+                with open(self.checkpoint_path, 'w', encoding='utf-8') as f:
+                    json.dump(current_data, f, ensure_ascii=False)
+            except Exception as e:
+                print(f"[翻译断点] 写入草稿失败: {e}")
+
     def translate_subtitles(
         self, 
         entries: List[SubtitleEntry]
     ) -> List[SubtitleEntry]:
         """
-        翻译字幕（智能分段）
+        翻译字幕（智能分段 + 并发加速 + 断点续译支持）
         
         Args:
             entries: 原始字幕条目列表
@@ -410,32 +459,92 @@ Now output the COMPLETE JSON array (no extra text, no abbreviations):"""
             except Exception:
                 raise
         
-        # 长视频：分批翻译（保留上下文）
-        translated_entries = []
+        # 长视频：分批翻译（支持多批次并发请求 + 断点草稿续译，大幅提速与防 token 浪费）
         total_batches = (total_lines + max_batch - 1) // max_batch
-        
+        max_workers = max(1, getattr(self.config, 'max_concurrent_batches', 3))
+
+        # 读取断点草稿缓存
+        cached_batches = self._load_checkpoint()
+        results_by_index = {}
+        completed_lines = 0
+
+        # 恢复草稿中的批次
+        for b_num, raw_list in cached_batches.items():
+            results_by_index[b_num] = [
+                SubtitleEntry(index=item["index"], timecode=item["timecode"], text=item["text"])
+                for item in raw_list
+            ]
+            completed_lines += len(results_by_index[b_num])
+
+        if cached_batches:
+            print(f"[翻译断点] 从草稿中恢复了 {len(cached_batches)}/{total_batches} 个批次，无需重复消耗 Token！")
+            self._update_progress(
+                completed_lines, total_lines,
+                f"已从断点恢复 {completed_lines}/{total_lines} 行，继续翻译剩余批次..."
+            )
+
+        # 准备待翻译批次
+        batches_info = []
         for i in range(0, total_lines, max_batch):
             batch_num = i // max_batch + 1
+            if batch_num in results_by_index:
+                continue  # 已从断点草稿加载，跳过网络调用
+
             batch = entries[i:i+max_batch]
-            
-            # 获取上下文
             context_before = entries[i-1].text if i > 0 else None
             context_after = entries[i+max_batch].text if i+max_batch < total_lines else None
-            
-            self._update_progress(
-                i, 
-                total_lines, 
-                f"正在翻译第 {batch_num}/{total_batches} 批（{len(batch)} 行）..."
-            )
-            
+            batches_info.append((batch_num, i, batch, context_before, context_after))
+
+        progress_lock = threading.Lock()
+        checkpoint_lock = threading.Lock()
+
+        def _process_one_batch(info):
+            b_num, start_idx, b_entries, ctx_b, ctx_a = info
             try:
-                translated_batch = self._translate_batch(batch, context_before, context_after)
-                translated_entries.extend(translated_batch)
+                translated_b = self._translate_batch(b_entries, ctx_b, ctx_a)
+                # 写入断点草稿缓存
+                self._save_checkpoint_batch(b_num, translated_b, checkpoint_lock)
+
+                nonlocal completed_lines
+                with progress_lock:
+                    completed_lines += len(b_entries)
+                    self._update_progress(
+                        completed_lines,
+                        total_lines,
+                        f"已完成 {completed_lines}/{total_lines} 行（批次 {b_num}/{total_batches}）..."
+                    )
+                return b_num, translated_b
             except Exception as e:
-                raise TranslationError(
-                    f"第 {batch_num}/{total_batches} 批翻译失败: {e}"
-                )
-        
+                raise TranslationError(f"第 {b_num}/{total_batches} 批翻译失败: {e}")
+
+        # 如果有未完成的批次需要请求
+        if batches_info:
+            if max_workers == 1:
+                for info in batches_info:
+                    b_num, translated_b = _process_one_batch(info)
+                    results_by_index[b_num] = translated_b
+            else:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(_process_one_batch, info) for info in batches_info]
+                    for future in as_completed(futures):
+                        b_num, translated_b = future.result()
+                        results_by_index[b_num] = translated_b
+
+        # 按原批次顺序重组结果
+        translated_entries = []
+        for b_num in range(1, total_batches + 1):
+            if b_num in results_by_index:
+                translated_entries.extend(results_by_index[b_num])
+            else:
+                raise TranslationError(f"批次 {b_num} 缺失，无法合成最终字幕")
+
+        # 翻译完成，清理断点草稿文件
+        if self.checkpoint_path and os.path.exists(self.checkpoint_path):
+            try:
+                os.remove(self.checkpoint_path)
+            except Exception:
+                pass
+
         self._update_progress(total_lines, total_lines, "翻译完成！")
         return translated_entries
 
@@ -501,7 +610,8 @@ def translate_srt_file(
     config: TranslationConfig,
     output_path: Optional[str] = None,
     progress_callback=None,
-    prompt_template=None
+    prompt_template=None,
+    checkpoint_path: Optional[str] = None
 ) -> Tuple[bool, str]:
     """
     翻译 SRT 文件（高级封装）
@@ -512,6 +622,7 @@ def translate_srt_file(
         output_path: 输出路径（默认：原文件名.{target_lang}.srt）
         progress_callback: 进度回调
         prompt_template: 提示词模板，如果为 None 则使用内置默认提示词
+        checkpoint_path: 断点草稿文件路径
 
     Returns:
         (成功标志, 消息)
@@ -522,8 +633,12 @@ def translate_srt_file(
         if not entries:
             return False, "字幕文件为空或格式错误"
 
+        # 如果未显式提供草稿路径，默认在同目录下生成 .part.json
+        if checkpoint_path is None:
+            checkpoint_path = str(Path(input_path).with_suffix(f'.{config.target_language}.part.json'))
+
         # 执行翻译
-        translator = SubtitleTranslator(config, progress_callback, prompt_template)
+        translator = SubtitleTranslator(config, progress_callback, prompt_template, checkpoint_path=checkpoint_path)
         translated_entries = translator.translate_subtitles(entries)
 
         # 生成输出路径

@@ -100,3 +100,16 @@ class TestClientTimeout:
 
         call_kwargs = mock_openai.call_args[1]
         assert call_kwargs["timeout"] == 600
+
+    @patch("services.translator.OpenAI")
+    def test_concurrent_batches_config(self, mock_openai):
+        """并发批次数量配置"""
+        config = TranslationConfig(
+            api_key="sk-test",
+            base_url="https://api.example.com/v1",
+            model_name="test-model",
+            target_language="zh",
+            max_concurrent_batches=5,
+        )
+        translator = SubtitleTranslator(config)
+        assert translator.config.max_concurrent_batches == 5

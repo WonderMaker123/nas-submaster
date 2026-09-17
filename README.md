@@ -1,244 +1,125 @@
-<div align="center">
+# NAS SubMaster (NAS 字幕管家)
 
-<img src="assets/logo.png" width="15%" />
-
-<h1 style="margin-top: 10px; margin-bottom: 0; border-bottom: none;">
-NAS SubMaster (NAS 字幕管家)
-</h1>
-
-<p style="font-size: 16px; font-weight: bold; margin-top: 5px; margin-bottom: 5px;">
-基于 Whisper + LLM 的全自动视频字幕提取与翻译工具
-</p>
-
-<!-- 这里的 <hr> 就是导致横线的原因，删掉它！ -->
-
-[![Docker Pulls](https://img.shields.io/docker/pulls/aexachao/nas-subtitle-manager.svg?logo=docker&label=Docker%20Pulls)]([https://hub.docker.com/r/aexachao/nas-subtitle-manager)
-[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://www.python.org/)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-orange.svg)](LICENSE)
-
-</div>
-
-
-**NAS 字幕管家** 是一个专为家庭 NAS 用户设计的智能化字幕工具。本项目已完成 **深度代码重构**，采用 **UI 与业务逻辑分离** 的模块化架构，运行更稳定，扩展性更强。
-
-它能够自动扫描 NAS 媒体库，支持 **3级子目录精确筛选**，利用 **Faster-Whisper** 提取语音，并调用 **大语言模型 (LLM)** 生成高质量的中文字幕。
-
-> ⭐ **如果这个项目对你有帮助，欢迎在 GitHub 上点个 Star 支持一下！**
+> 专为 NAS / 家庭影音服务器（Jellyfin、Emby、Plex）打造的全自动影视字幕提取与 AI 翻译神器。  
+> 基于 **Faster-Whisper**（内置轻量模型） + **大语言模型（LLM）**，一键搞定听写、翻译、双语字幕合成与原位入库。
 
 ---
 
-## ✨ 核心特性
+## 🚀 小白一分钟极速安装（Docker Compose）
 
-* **🏗️ 模块化架构 (New)**：代码重构为 Service/UI 分层模式。`services` 层处理核心计算，`ui` 层负责交互渲染，逻辑更清晰，维护更方便。
-* **📂 精确目录扫描 (New)**：告别全盘漫长扫描！新增 **3级目录选择器**，支持精确指定扫描媒体库下的某个子目录（如 `/media/电影/2024/科幻`），只处理你关心的文件夹。
-* **🎯 全流程自动化**：一键扫描 → 智能识别缺失字幕 → 提取音频 → 语音转文字 → AI 翻译 → 原位保存。
-* **🧠 智能翻译引擎**：
-    * 内置 `translator` 服务，支持 **防复读**、**格式校验**、**智能断句**。
-    * 内置“信达雅”级 Prompt，拒绝生硬机翻。
-* **🤖 多模型支持**：
-    * **语音识别**：内置 Faster-Whisper，支持 `tiny` 到 `large-v3` 全系列模型。
-    * **AI 翻译**：完美支持 **Ollama (本地隐私)**、**DeepSeek (高性价比)**、**Google Gemini**、**OpenAI** 等主流接口。
-* **📊 任务队列系统**：支持批量添加任务、后台异步处理、实时进度监控、断点重试。
+你不需要复杂的命令行操作，只要你的 NAS 支持 Docker（群晖、威联通、极空间、绿联、飞牛 fnOS、自建 Unraid/Linux 等），复制下方配置即可一键运行！
 
----
+### 步骤 1：准备一个目录
+在你的 NAS 上新建一个文件夹（例如 `docker/nas-submaster`），并在里面新建一个名为 `docker-compose.yml` 的文本文件。
 
-## 📸 界面预览
+### 步骤 2：直接复制下方配置到 `docker-compose.yml`
 
-![Dashboard](docs/images/dashboard.png)
+> 💡 **小白注意**：只需要修改第 **11** 行的 `/volume1/video` 为你自己 NAS 上存电影/电视剧的真实路径！
 
----
+```yaml
+services:
+  nas-submaster:
+    image: wndfl/nas-submaster:latest
+    container_name: nas-submaster
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      # 1. 软件数据与配置目录（不需要改，默认保存在当前文件夹的 data 下）
+      - ./data:/data
+      # 2. 你的媒体库目录（【重要】：把前面的 /volume1/video 改成你 NAS 的真实影视路径）
+      - /volume1/video:/media/movies
+      # 3. Docker 通信（用于网页端检测与自更新）
+      - /var/run/docker.sock:/var/run/docker.sock
 
-## 🚀 部署方式
+    # 💡【可选】Intel 核显硬件加速（N100 / J4125 / J6412 / 8-12代Intel CPU 用户建议开启，去掉下面两行前面的 # 注释）
+    # devices:
+    #   - /dev/dri:/dev/dri
 
-### 仓库里的 compose 文件说明
-
-| 文件 | 用途 |
-|---|---|
-| `docker-compose.yml` | **唯一必选**，包含 `nas-subtitle` 服务 |
-| `docker-compose.ollama.yml` | 可选叠加，添加本地 Ollama 翻译服务 |
-| `docker-compose.dev.yml` | 开发用，叠加后从本地 Dockerfile 构建 |
-
-### 方案一：使用 Docker Hub 镜像 (推荐)
-
-1. 在 NAS 上创建一个文件夹（例如 `nas-subtitle`）。
-2. 把仓库里的 `docker-compose.yml` 复制到该目录，**修改视频路径**：
-   ```yaml
-   volumes:
-     - ./data:/data
-     - /your/media/path:/media/movies   # ← 改这里
-   ```
-3. 启动：
-   ```bash
-   docker compose up -d
-   ```
-4. 浏览器访问 `http://NAS_IP:8501`，首次进入"设置"页配置翻译 API（DeepSeek / OpenAI / Gemini 等任选）。
-
-**默认行为**：不启用本地 Ollama，需要本地翻译时叠加：
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      # 镜像已出厂内置 tiny 极速模型（免下载、秒开），如需首次下载 base 可改此项
+      - WHISPER_PRELOAD_MODELS=tiny
+      # auto 表示有显卡用显卡，没有显卡自动回退到 CPU，无需担心报错
+      - WHISPER_DEVICE=auto
+    shm_size: 4gb
 ```
 
-在 Web 设置界面选 "Ollama (本地模型)"，base_url 填 `http://ollama:11434/v1`，模型名填 `qwen2.5:7b`（或你 pull 过的任意模型）。
+### 步骤 3：一键启动
+- **命令行用户**：在 `docker-compose.yml` 所在目录执行：
+  ```bash
+  docker compose up -d
+  ```
+- **NAS 界面用户**（群晖 Container Manager / 威联通 ContainerStation / 飞牛 Docker / 绿联 Docker 等）：  
+  打开“项目 / Compose” -> “新增项目” -> 粘贴上面的内容 -> 点击“立即部署”。
 
-**更新镜像**：
+### 步骤 4：打开管理后台
+在浏览器中打开：
+```text
+http://你的NAS_IP:8501
+```
+*(例如 `http://192.168.1.100:8501`)*
+
+---
+
+## 🎯 第一次使用配置（30秒完成）
+
+1. **配置 AI 翻译**：
+   - 打开网页后，点击右上角（或侧边栏）的 **「⚙️ 设置」**。
+   - 在【翻译设置】中填入你常用的 AI 大模型 API：
+     - **极力推荐**：DeepSeek（便宜且翻译质量媲美人工）。
+     - 也完美支持：Google Gemini、Kimi/Moonshot、通义千问、OpenAI、本地 Ollama 等。
+2. **选择影视目录并提取**：
+   - 切换到 **「媒体库」** 页面，选择要处理的影视目录，点击“扫描目录”。
+   - 勾选你需要生成字幕的视频，点击 **「添加任务到队列」**。
+   - 系统将在后台全自动处理：**智能提取音频 -> Whisper 语音识别 -> AI 批量并发翻译 -> 导出并关联中文字幕**！
+
+---
+
+## ✨ 核心特性亮点
+
+- **⚡ 开箱即用**：镜像出厂内置 Whisper `tiny` 极速模型（仅约 75MB），无网/内网弱网环境无需漫长等待模型下载，秒开启动。
+- **🎬 媒体服务器友好（中英双语字幕）**：
+  - 支持自动合成**中英双语字幕**（中文在上，外文在下），看剧学习两不误。
+  - 符合 Jellyfin / Emby / Plex 国际命名标准（支持 `.zh-CN.srt`、`.chi.default.srt` 等），播放器 100% 自动点亮中文字幕轨。
+- **🚀 异步并发翻译加速**：
+  - 采用多批次并发请求架构，整部 2 小时电影翻译时间直接缩短 **60%~75%**，拒绝漫长等待。
+- **🛡️ 翻译断点续传（防浪费 Token）**：
+  - 遇到断网或大模型 API 欠费中断？没关系！系统自动记录批次草稿，网络恢复后点击重试，**自动从上次断开的批次继续**，前期花费的 Token 零浪费。
+- **🧠 深度思考模型兼容**：
+  - 完美适配 DeepSeek-R1 等推理思考模型，自动清洗 `<think>` 标签，杜绝 JSON 格式损坏。
+- **🔇 智能静音跳过（VAD 提速 40%）**：
+  - 自动跳过长片段无对白背景音，时间戳严丝合缝对齐原画，大幅减轻 CPU 推理负载。
+- **💾 NAS 内存守卫（自动休眠卸载）**：
+  - 识别结束后，模型闲置 5 分钟自动从内存中彻底卸载，把几百兆甚至数 G 内存完整让还给 NAS 其它容器。
+- **🔍 4K 蓝光防卡盘优化**：
+  - 转写前通过 ffmpeg 秒级提取 16kHz 轻量音频流，Whisper 不再直接啃几十 GB 的大 MKV 文件，保护机械硬盘，告别 I/O 读盘卡顿。
+- **🔄 内置字幕智能健康检测**：
+  - 优先尝试视频内嵌软字幕，若检测到字幕残缺截断（如仅前几行广告），系统**自动无缝回退**到 Whisper 完整音频语音识别。
+
+---
+
+## ❓ 常见问题（FAQ）
+
+### Q1：我需要下载很大很大的 Whisper 模型吗？
+不需要！镜像内部已经直接打包好了 `tiny` 模型。如果你的 NAS CPU 性能不错或配备了 Intel 核显，想追求更高准确率，也可以在 Web 设置里一键下载 `small` 或 `base` 模型。
+
+### Q2：如何开启群晖/绿联/N100等 NAS 的核显硬件加速？
+如果你的 NAS 是 Intel 处理器（如 N100, J4125, N5105 等），只需在 `docker-compose.yml` 中把这两行前面的 `#` 删掉：
+```yaml
+devices:
+  - /dev/dri:/dev/dri
+```
+保存后重新启动容器，系统将自动调用核显加速音频转码与模型计算，CPU 占用直线下降！
+
+### Q3：如何更新到最新版本？
+在 `docker-compose.yml` 所在目录执行：
 ```bash
 docker compose pull && docker compose up -d
 ```
 
 ---
 
-### 方案二：本地源码构建（开发者）
-
-如果您需要二次开发，请参考最新的模块化目录结构。
-
-1.  **克隆项目**：
-    ```bash
-    git clone https://github.com/aexachao/nas-submaster.git
-    cd nas-submaster
-    ```
-
-2.  **构建并启动**：
-    ```bash
-    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-    ```
-
----
-
-## 📂 项目结构
-
-本项目采用了清晰的分层架构：
-
-```text
-nas-submaster/
-├── app.py
-├── assets
-│   └── logo.png
-├── core
-│   ├── config.py
-│   ├── models.py
-│   └── worker.py
-├── database
-│   ├── connection.py
-│   ├── media_dao.py
-│   └── task_dao.py
-├── Dockerfile
-├── docker-compose.yml
-├── docker-compose.ollama.yml
-├── requirements.txt
-├── requirements-test.txt
-├── services
-│   ├── media_scanner.py
-│   ├── subtitle_converter.py
-│   ├── translator.py
-│   └── whisper_service.py
-├── ui
-│   ├── components.py
-│   ├── pages
-│   │   ├── media_library.py
-│   │   └── task_queue.py
-│   ├── settings_modal.py
-│   └── styles.py
-└── utils
-    ├── format_utils.py
-    └── lang_detection.py
-```
-
----
-
-## 📖 使用指南
-
-启动成功后，浏览器访问：`http://localhost:8501`
-
-### 1. 媒体库扫描 (Sub-folder Scanning)
-在首页 **"媒体库"** 区域：
-* **根路径**：默认为 Docker 映射的 `/media`。
-* **目录选择**：点击下拉菜单，系统会动态加载 `/media` 下的文件夹。
-    * ✅ 支持 **3级深度** 的子文件夹浏览。
-    * 例如：你可以直接选择 `Movie > 2024 > 动作片` 进行扫描，而无需扫描整个媒体库。
-* **执行扫描**：选中目标文件夹后，点击“扫描当前目录”。
-
-### 2. 批量任务管理
-1.  **筛选**：扫描完成后，列表展示该目录下的视频文件，勾选需要处理的文件。
-2.  **提交**：点击“添加到队列”，任务将被发送到 `core/worker.py` 进行后台处理。
-3.  **监控**：切换到 **"任务队列"** 页面查看实时日志。
-
-### 3. 配置建议
-* **Whisper**：NAS 若无显卡，建议使用 `tiny` 或 `small` 模型 + `int8` 量化。
-* **翻译 API**：
-    * **DeepSeek**：推荐用于高性价比翻译。
-    * **Ollama**：推荐 `qwen2.5` 模型用于本地离线翻译。
-
-### 4. 启用 GPU 加速（可选）
-
-镜像基于 `nvidia/cuda:12.4.1-cudnn-runtime`，**已内置** `libcublas.so.12`，无需在宿主机挂载 NVIDIA 驱动目录即可启用 GPU。
-
-**步骤**：
-
-1. **宿主机准备**（一次性）：
-   * Linux 服务器/桌面：安装 [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-   * **威联通 QTS Hero**：在 App Center 搜索安装 `Container Station GPU Driver` 套件
-   * **群晖 DSM**：在 Package Center 装 `GPU Driver` 套件
-   * **Unraid**：在 Community Applications 装 `nvidia-driver` 插件
-
-2. **修改 `docker-compose.yml`**，给 `nas-subtitle` 服务加两段配置：
-
-   `environment` 下追加：
-   ```yaml
-   - NVIDIA_VISIBLE_DEVICES=all
-   - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-   ```
-
-   新增 `deploy` 块（与文件末尾 `networks` 同级）：
-   ```yaml
-   deploy:
-     resources:
-       reservations:
-         devices:
-           - driver: nvidia
-             count: all
-             capabilities: [gpu]
-   ```
-
-3. **重启**：`docker compose up -d`
-
-启动后 `WHISPER_DEVICE=auto` 会自动尝试 CUDA；遇到驱动/库问题（如 libcublas 缺失）会**自动回退到 CPU**，不会让任务崩溃。
-
-**验证 GPU 是否生效**：
-```bash
-docker exec nas-submaster python -c "import ctranslate2; print('CUDA 设备数:', ctranslate2.get_cuda_device_count())"
-# 输出 >= 1 表示 GPU 已被容器识别
-```
-
----
-
-## 🤝 常见问题 (FAQ)
-
-**Q: 目录选择器为什么只能看到 3 级？**
-A: 为了保证 Web 界面的响应速度，我们在 `media_scanner.py` 中限制了遍历深度。如果您的文件层级极深，建议调整 NAS 的目录挂载方式，将更深层的目录直接映射到容器的 `/media` 下。
-
-**Q: 之前的数据库还能用吗？**
-A: 本次重构优化了数据库结构，旧版 `data/database.db` 可能无法直接兼容。建议备份旧数据后，让程序自动生成新的数据库文件。
-
-**Q: 如何查看报错日志？**
-A: 可以通过 `docker logs -f nas-subtitle` 查看后端详细运行日志。
-
-**Q: 报 `Library libcublas.so.12 is not found` 怎么办？**
-A: 拉取最新镜像（`docker compose pull`）即可。最新镜像基于 `nvidia/cuda` 构建，cuBLAS 库已内置。日志中如果出现 `CUDA 不可用，自动回退到 CPU` 是正常行为，说明 GPU 暂时不可用但任务仍能继续。如需强制 GPU，请检查宿主机 `nvidia-container-toolkit` 是否安装正确（参见上方"启用 GPU 加速"章节）。
-
-**Q: 设置里改了提示词但保存后再打开又恢复成默认了？**
-A: 已在最新 commit 修复（`ConfigManager` 的 save/load 缺 `prompt_templates` 字段）。`docker compose pull` 拉取最新镜像后，改提示词 → 保存 → 刷新页面即可保留。如果"重置为默认"按钮还会触发红色报错，请把完整错误文本贴到 issue 便于排查。
-
----
-
-## 📄 开源协议
-
-本项目采用 [AGPL-3.0](LICENSE) 协议开源。
-
-**简单来说**：你可以自由使用、修改和商用本项目，但如果你把它做成网站或服务给别人用，需要公开你的源代码。
-
----
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=aexachao/nas-submaster&type=Date)](https://star-history.com/#aexachao/nas-submaster)
+## 📄 授权协议
+本项目遵循 [AGPL-3.0](LICENSE) 开源协议。

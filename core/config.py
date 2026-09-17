@@ -451,7 +451,11 @@ class ConfigManager:
                 'translation': {
                     'enabled': config_dict.get('enable_translation', 'true') == 'true',  # v1.8.2+
                     'target_language': config_dict.get('target_language', 'zh'),
+                    'use_embedded_subtitle': config_dict.get('use_embedded_subtitle', 'true') == 'true',
+                    'min_embedded_subtitle_lines': int(config_dict.get('min_embedded_subtitle_lines', 10)),
+                    'check_embedded_coverage': config_dict.get('check_embedded_coverage', 'true') == 'true',
                     'max_lines_per_batch': int(config_dict.get('max_lines_per_batch', 500)),
+                    'max_concurrent_batches': int(config_dict.get('max_concurrent_batches', 3)),
                     'timeout': int(config_dict.get('timeout', 600))
                 },
                 'export': json.loads(config_dict.get('export_formats', '{"formats": ["srt"]}')),
@@ -495,7 +499,11 @@ class ConfigManager:
                 'source_language': config.whisper.source_language,
                 'enable_translation': 'true' if config.translation.enabled else 'false',
                 'target_language': config.translation.target_language,
+                'use_embedded_subtitle': 'true' if config.translation.use_embedded_subtitle else 'false',
+                'min_embedded_subtitle_lines': str(config.translation.min_embedded_subtitle_lines),
+                'check_embedded_coverage': 'true' if config.translation.check_embedded_coverage else 'false',
                 'max_lines_per_batch': str(config.translation.max_lines_per_batch),
+                'max_concurrent_batches': str(config.translation.max_concurrent_batches),
                 'timeout': str(config.translation.timeout),
                 'export_formats': json.dumps(config.export.to_dict(), ensure_ascii=False),
                 'content_type': config.content_type.value if isinstance(config.content_type, ContentType) else config.content_type,

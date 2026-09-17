@@ -1,6 +1,6 @@
 services:
   nas-subtitle:
-    image: aexachao/nas-subtitle-manager:latest
+    image: wndfl/nas-submaster:latest
     container_name: nas-submaster
     restart: unless-stopped
     ports:
@@ -9,15 +9,15 @@ services:
       - ./data:/data
       - /your/media/path:/media/movies  # 修改成你自己的媒体库地址
       - /var/run/docker.sock:/var/run/docker.sock  # 自更新功能需要
+    # Intel 核显/硬件加速支持（群晖/绿联/极空间/自建 NAS 具备核显时取消下面注释）
+    # devices:
+    #   - /dev/dri:/dev/dri
     environment:
       - TZ=Asia/Shanghai
       - PYTHONUNBUFFERED=1
-      # 首次启动时预下载的 Whisper 模型（逗号分隔，如 "base" 或 "base,medium"）
-      # 设为空字符串则跳过预下载，由运行时的 worker 触发下载
-      # 注意：不要设 HF_ENDPOINT=hf-mirror.com，否则 huggingface_hub 1.18+ 会
-      # 因不 follow 跨域 308 重定向而报 "Hub" 错误。直连 huggingface.co 即可。
-      - WHISPER_PRELOAD_MODELS=base
-      # Whisper 设备：auto = 优先 GPU，CUDA 不可用时回退 CPU；也可填 cpu / cuda
+      # 首次启动时预下载的 Whisper 模型（逗号分隔，镜像已内置 tiny 免下载；也可预载 base）
+      - WHISPER_PRELOAD_MODELS=tiny
+      # Whisper 设备：auto = 优先 GPU，不可用时回退 CPU；也可填 cpu / cuda
       - WHISPER_DEVICE=auto
     shm_size: 4gb
     networks:

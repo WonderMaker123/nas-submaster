@@ -37,8 +37,10 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # 复制所有应用代码
 COPY . .
 
-# 创建数据目录
-RUN mkdir -p /data/models
+# 创建数据与内置模型目录，并在构建期烘焙 tiny 模型到 /app/builtin_models（仅约 75MB，避免 NAS 无外网或首次冷启动慢）
+RUN mkdir -p /data/models /app/builtin_models \
+    && python3 scripts/download_whisper_model.py tiny /app/builtin_models || \
+       echo "[Build] WARN: 构建期下载 tiny 模型失败，将在首次运行时通过网络下载"
 
 # 暴露 Streamlit 默认端口
 EXPOSE 8501

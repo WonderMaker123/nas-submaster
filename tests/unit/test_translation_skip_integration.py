@@ -72,6 +72,8 @@ def _make_config(target_lang="zh", source_lang="auto",
     config.translation.enabled = translation_enabled
     config.translation.target_language = target_lang
     config.translation.use_embedded_subtitle = use_embedded
+    config.translation.min_embedded_subtitle_lines = 10
+    config.translation.check_embedded_coverage = True
     config.translation.max_lines_per_batch = 100
     config.translation.timeout = 60
     config.whisper.source_language = source_lang
@@ -109,7 +111,7 @@ class TestEmbeddedSubtitleSkipIntegration:
         # 准备一个真实可写的 srt 文件（worker 要 update_task + 后续 rescan 读它）
         fake_srt = tmp_path / "embedded_zh.srt"
         fake_srt.write_text(
-            "1\n00:00:01,000 --> 00:00:02,000\n你好世界\n\n",
+            "\n".join([f"{i}\n00:{i//60:02d}:{i%60:02d},000 --> 00:{i//60:02d}:{i%60:02d},900\n你好世界 {i}\n" for i in range(1, 25)]),
             encoding="utf-8"
         )
 
