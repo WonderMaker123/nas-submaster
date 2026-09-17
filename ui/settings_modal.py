@@ -113,9 +113,10 @@ def render_settings_dialog():
     export_changes = {}
     prompt_changes = {}  # 提示词配置变更
     scan_changes = {}  # 自动扫描配置变更
+    security_changes = {}  # 安全与访问控制变更
 
     # 创建 Tabs
-    tab_whisper, tab_params, tab_prompts, tab_model, tab_trans, tab_export, tab_scan, tab_about = st.tabs([
+    tab_whisper, tab_params, tab_prompts, tab_model, tab_trans, tab_export, tab_scan, tab_security, tab_about = st.tabs([
         "Whisper 设置",
         "语音识别参数",
         "提示词设置",
@@ -123,6 +124,7 @@ def render_settings_dialog():
         "翻译设置",
         "字幕格式",
         "自动扫描",
+        "访问安全",
         "关于"
     ])
     
@@ -600,7 +602,26 @@ def render_settings_dialog():
         if auto_scan:
             st.info(f"每 {interval} 分钟自动扫描一次媒体目录，新文件会自动出现在媒体库中")
 
-    # 8. 关于
+    # 8. 访问安全
+    with tab_security:
+        st.subheader("Web 访问密码与安全控制")
+        st.markdown("设置 Web 访问密码，防止内网穿透或公网暴露后未授权访问。")
+        
+        current_pwd = config.web_password or ""
+        new_pwd = st.text_input(
+            "访问密码",
+            value=current_pwd,
+            type="password",
+            help="留空表示无需密码，直接访问；填写密码后每次打开浏览器需验证"
+        )
+        security_changes['web_password'] = new_pwd.strip()
+        
+        if new_pwd.strip():
+            st.success("🔒 已启用访问密码保护")
+        else:
+            st.warning("⚠️ 未设置密码：任何人访问该端口均可操作媒体与消耗 API 配额")
+
+    # 9. 关于
     with tab_about:
         st.subheader("NAS SubMaster 字幕管家")
         st.markdown(f"**当前版本：** `{APP_VERSION}`")
@@ -636,11 +657,11 @@ def render_settings_dialog():
 
     # 底部保存按钮
     if st.button("保存所有设置", type="primary", use_container_width=True):
-        _save_full_config(config_manager, whisper_changes, model_changes, trans_changes, export_changes, prompt_changes, scan_changes)
+        _save_full_config(config_manager, whisper_changes, model_changes, trans_changes, export_changes, prompt_changes, scan_changes, security_changes)
         st.rerun()
 
 
-def _save_full_config(mgr, w_changes, m_changes, t_changes, e_changes, p_changes, s_changes=None):
+def _save_full_config(mgr, w_changes, m_changes, t_changes, e_changes, p_changes, s_changes=None, sec_changes=None):
     """保存逻辑"""
     config = mgr.load()
 
@@ -683,6 +704,10 @@ def _save_full_config(mgr, w_changes, m_changes, t_changes, e_changes, p_changes
     if s_changes:
         config.auto_scan_enabled = s_changes.get('auto_scan_enabled', False)
         config.auto_scan_interval_minutes = s_changes.get('auto_scan_interval_minutes', 30)
+
+    # Security
+    if sec_changes and 'web_password' in sec_changes:
+        config.web_password = sec_changes['web_password']
 
     # Save
     if mgr.save(config):

@@ -301,6 +301,9 @@ class AppConfig:
     auto_scan_enabled: bool = True
     auto_scan_interval_minutes: int = 30
 
+    # 访问控制（Web 访问密码，留空或 None 表示无需密码）
+    web_password: str = ''
+
     def get_vad_parameters(self) -> VADParameters:
         """获取当前内容类型的 VAD 参数"""
         return VAD_PRESETS.get(self.content_type, VAD_PRESETS[ContentType.MOVIE])
@@ -356,6 +359,7 @@ class AppConfig:
             },
             'auto_scan_enabled': self.auto_scan_enabled,
             'auto_scan_interval_minutes': self.auto_scan_interval_minutes,
+            'web_password': self.web_password,
         }
     
     @classmethod
@@ -407,6 +411,7 @@ class AppConfig:
             prompt_templates=prompt_templates,
             auto_scan_enabled=data.get('auto_scan_enabled', True),
             auto_scan_interval_minutes=data.get('auto_scan_interval_minutes', 30),
+            web_password=data.get('web_password', ''),
         )
 
 
@@ -465,6 +470,7 @@ class ConfigManager:
                 'prompt_templates': json.loads(config_dict.get('prompt_templates', '{}')),
                 'auto_scan_enabled': config_dict.get('auto_scan_enabled', 'true') == 'true',
                 'auto_scan_interval_minutes': int(config_dict.get('auto_scan_interval_minutes', 30)),
+                'web_password': os.environ.get('WEB_PASSWORD', config_dict.get('web_password', '')),
             }
             
             # ✅ 修改：加载完成后更新缓存
@@ -518,6 +524,7 @@ class ConfigManager:
                 ),
                 'auto_scan_enabled': 'true' if config.auto_scan_enabled else 'false',
                 'auto_scan_interval_minutes': str(config.auto_scan_interval_minutes),
+                'web_password': config.web_password,
             }
             
             for key, value in flat_config.items():

@@ -44,6 +44,9 @@ services:
       # auto 表示有显卡用显卡，没有显卡自动回退到 CPU，无需担心报错
       - WHISPER_DEVICE=auto
 
+      # 🔒【可选】Web 访问安全密码（留空或注释则免密进入；设置后公网访问必须输入此密码）
+      # - WEB_PASSWORD=your_password
+
       # 🌐【可选】网络代理配置（大陆 NAS 用户如果需要下载 base/small/large 等大模型或访问国外 LLM API，去掉下面注释并修改为你局域网的代理地址）
       # - HTTP_PROXY=http://192.168.1.100:7890
       # - HTTPS_PROXY=http://192.168.1.100:7890
