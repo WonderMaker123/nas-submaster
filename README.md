@@ -39,8 +39,8 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONUNBUFFERED=1
-      # 镜像已出厂内置 tiny 极速模型（免下载、秒开），如需首次下载 base 可改此项
-      - WHISPER_PRELOAD_MODELS=tiny
+      # 镜像已出厂内置 tiny 极速模型（免下载、秒开）；如需开机自动预载 base 等可取消下行注释
+      # - WHISPER_PRELOAD_MODELS=base
       # auto 表示有显卡用显卡，没有显卡自动回退到 CPU，无需担心报错
       - WHISPER_DEVICE=auto
 

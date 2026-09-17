@@ -15,8 +15,8 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONUNBUFFERED=1
-      # 首次启动时预下载的 Whisper 模型（逗号分隔，镜像已内置 tiny 免下载；也可预载 base）
-      - WHISPER_PRELOAD_MODELS=tiny
+      # 首次启动时额外预下载的 Whisper 模型（镜像已开箱内置 tiny 无需重复拉取；如需开机自动预载 base 可取消注释）
+      # - WHISPER_PRELOAD_MODELS=base
       # Whisper 设备：auto = 优先 GPU，不可用时回退 CPU；也可填 cpu / cuda
       - WHISPER_DEVICE=auto
       # 访问安全密码（留空或注释则免密进入；设置后公网访问需输入该密码）

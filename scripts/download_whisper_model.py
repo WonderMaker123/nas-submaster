@@ -50,19 +50,33 @@ def get_model_dir() -> str:
 
 
 def is_model_complete(model_size: str, model_dir: str) -> bool:
-    """检查模型文件是否已完整下载（参考 whisper_service._verify_model_files）"""
+    """检查模型文件是否已完整下载（检查目标目录及内置烘焙目录）"""
     required_files = ["config.json", "model.bin", "tokenizer.json"]
-    snapshots = Path(model_dir) / f"models--Systran--faster-whisper-{model_size}" / "snapshots"
-    if not snapshots.is_dir():
-        return False
-    for commit_dir in snapshots.iterdir():
-        if not commit_dir.is_dir():
-            continue
-        if all(
-            (commit_dir / f).exists() and (commit_dir / f).stat().st_size > 0
-            for f in required_files
-        ):
-            return True
+    
+    # 检查顺序：用户指定目录 -> 容器内置独立目录 /app/builtin_models -> ./builtin_models
+    candidate_dirs = [model_dir]
+    for builtin in ["/app/builtin_models", "./builtin_models"]:
+        if os.path.isdir(builtin) and builtin != model_dir:
+            candidate_dirs.append(builtin)
+
+    for c_dir in candidate_dirs:
+        # 1. 检查 HF snapshots 结构
+        snapshots = Path(c_dir) / f"models--Systran--faster-whisper-{model_size}" / "snapshots"
+        if snapshots.is_dir():
+            for commit_dir in snapshots.iterdir():
+                if not commit_dir.is_dir():
+                    continue
+                if all(
+                    (commit_dir / f).exists() and (commit_dir / f).stat().st_size > 0
+                    for f in required_files
+                ):
+                    return True
+        # 2. 检查扁平目录
+        flat_dir = Path(c_dir) / model_size
+        if flat_dir.is_dir():
+            if all((flat_dir / f).exists() and (flat_dir / f).stat().st_size > 0 for f in required_files):
+                return True
+
     return False
 
 
