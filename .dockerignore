@@ -1,8 +1,12 @@
 # .dockerignore
 __pycache__
 *.pyc
+*.pyo
+*.pyd
 .git
+.gitignore
 .venv
+venv/
 data/
 media/
 .DS_Store
@@ -13,3 +17,7 @@ requirements-test.txt
 .github/
 *.md
 docker-compose*.yml
+.vscode/
+.idea/
+tmp/
+temp/

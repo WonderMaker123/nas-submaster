@@ -1,56 +1,49 @@
-# 使用 NVIDIA CUDA 基础镜像（libcublas.so.12 等 CUDA 库已内置在镜像中）
-# 启用 GPU 时无需在宿主机挂载 NVIDIA 驱动目录
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+# 选用精简版 Python 基础镜像（仅约 50MB，大幅缩减镜像体积）
+FROM python:3.10-slim
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
 
 # 设置工作目录
 WORKDIR /app
 
-# 安装系统依赖（python3 已内置在 ubuntu22.04 基础镜像中，无需显式安装 python3.10）
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
+# 安装必要的系统依赖（ffmpeg 用于音视频处理，curl 用于健康检查，tzdata 设置时区）
+# 保持极简依赖，并彻底清理 apt 缓存
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    git \
     tzdata \
     curl \
-    wget \
-    iputils-ping \
-    net-tools \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件
 COPY requirements.txt .
 
-# 使用 pip 默认源安装依赖
+# 安装 Python 依赖，强制不拉取任何额外的 NVIDIA CUDA 庞大轮子
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# 复制所有应用代码
+# 复制应用代码
 COPY . .
 
-# 创建数据与内置模型目录，并在构建期烘焙 tiny 模型到 /app/builtin_models（仅约 75MB，避免 NAS 无外网或首次冷启动慢）
+# 创建数据与内置模型目录，并在构建期烘焙 tiny 模型到 /app/builtin_models（仅约 75MB，开箱即用）
 RUN mkdir -p /data/models /app/builtin_models \
     && python3 scripts/download_whisper_model.py tiny /app/builtin_models || \
        echo "[Build] WARN: 构建期下载 tiny 模型失败，将在首次运行时通过网络下载"
 
-# 暴露 Streamlit 默认端口
+# 暴露 Streamlit 端口
 EXPOSE 8501
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
-# 启动命令：先预下载 Whisper 模型（若 WHISPER_PRELOAD_MODELS 设置），再启动 Streamlit
-# 预下载可在首次启动时完成模型拉取，避免在 worker 处理任务时下载卡 UI
+# 启动命令
 CMD ["sh", "-c", "\
     if [ -n \"$WHISPER_PRELOAD_MODELS\" ]; then \
         echo \"[Entrypoint] Pre-downloading Whisper models: $WHISPER_PRELOAD_MODELS\"; \

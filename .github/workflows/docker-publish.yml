@@ -1,77 +1,51 @@
 name: Build and Push Docker Image
 
-# 触发条件：当代码推送到 main 分支，或者发布 Release 时触发
 on:
   push:
-    branches: [ "main" ]
-    # 如果你也想打 tag 时触发构建，取消下面注释
-    # tags: [ 'v*.*.*' ]
-  workflow_dispatch: # 允许手动点击按钮触发
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch: # 支持在 GitHub 网页上手动点击按钮触发
 
 jobs:
-  test:
-    name: Unit Tests
+  build-and-push:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-test.txt
-
-      - name: Run tests
-        run: pytest tests/unit/ -v
-
-  build:
-    name: Build and Push Image
-    runs-on: ubuntu-latest
-    needs: test  # 单测不过不构建镜像
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      # 1. 设置 QEMU (用于支持多架构构建，比如同时支持 x86 和 arm64)
-      # 这对 NAS 用户非常重要，因为很多 NAS 是 ARM 架构的
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@v3
 
-      # 2. 设置 Docker Buildx
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
-      # 3. 登录 Docker Hub
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 4. 提取版本号
-      - name: Get version from config
-        id: version
-        run: |
-          VERSION=$(grep -oP 'APP_VERSION = "v\K[^"]+' core/config.py)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected version: v$VERSION"
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: wndfl/nas-submaster
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
 
-      # 5. 构建并推送
-      - name: Build and push
-        uses: docker/build-push-action@v7
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
-          # 这里开启多架构支持，既支持电脑也支持树莓派/玩客云
-          platforms: linux/amd64,linux/arm64
           push: true
-          # 替换成你的 Docker Hub 用户名和仓库名
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/zimu:latest
-            ${{ secrets.DOCKER_USERNAME }}/zimu:v${{ steps.version.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

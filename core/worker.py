@@ -766,6 +766,8 @@ class TaskWorker:
                                    f"{Path(file_path).stem}.{config.translation.target_language}.srt"
                         if trans_srt.exists():
                             SubtitleConverter.convert_file(str(trans_srt), fmt)
+                except Exception as e:
+                    print(f"[TaskWorker] Failed to export {fmt}: {e}")
 
             # 自动生成中外双语字幕（若开启且存在原语言与翻译语言）
             if config.translation.enabled and getattr(config.export, 'generate_bilingual', True):
@@ -779,9 +781,6 @@ class TaskWorker:
                             exported_formats.append("双语SRT")
                 except Exception as b_err:
                     print(f"[TaskWorker] 生成双语字幕失败: {b_err}")
-
-                except Exception as e:
-                    print(f"[TaskWorker] Failed to export {fmt}: {e}")
 
             if exported_formats:
                 current_task = TaskDAO.get_task_by_id(task_id)
