@@ -33,7 +33,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: wndfl/nas-submaster
+          images: ${{ secrets.DOCKER_USERNAME }}/nas-submaster
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
             type=ref,event=branch
@@ -44,8 +44,9 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
-          # 替换成你的 Docker Hub 用户名和仓库名
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/nas-submaster:latest
-            ${{ secrets.DOCKER_USERNAME }}/nas-submaster:v${{ steps.version.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
