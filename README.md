@@ -43,6 +43,11 @@ services:
       - WHISPER_PRELOAD_MODELS=tiny
       # auto 表示有显卡用显卡，没有显卡自动回退到 CPU，无需担心报错
       - WHISPER_DEVICE=auto
+
+      # 🌐【可选】网络代理配置（大陆 NAS 用户如果需要下载 base/small/large 等大模型或访问国外 LLM API，去掉下面注释并修改为你局域网的代理地址）
+      # - HTTP_PROXY=http://192.168.1.100:7890
+      # - HTTPS_PROXY=http://192.168.1.100:7890
+      # - NO_PROXY=localhost,127.0.0.1
     shm_size: 4gb
 ```
 
@@ -105,7 +110,16 @@ http://你的NAS_IP:8501
 ### Q1：我需要下载很大很大的 Whisper 模型吗？
 不需要！镜像内部已经直接打包好了 `tiny` 模型。如果你的 NAS CPU 性能不错或配备了 Intel 核显，想追求更高准确率，也可以在 Web 设置里一键下载 `small` 或 `base` 模型。
 
-### Q2：如何开启群晖/绿联/N100等 NAS 的核显硬件加速？
+### Q2：中国大陆 NAS 用户下载更多模型或连接国外 API 超时怎么办？
+只需在 `docker-compose.yml` 的 `environment` 下打开代理配置：
+```yaml
+environment:
+  - HTTP_PROXY=http://192.168.1.100:7890
+  - HTTPS_PROXY=http://192.168.1.100:7890
+```
+把其中的 `192.168.1.100:7890` 换成你局域网中运行的代理端口即可。
+
+### Q3：如何开启群晖/绿联/N100等 NAS 的核显硬件加速？
 如果你的 NAS 是 Intel 处理器（如 N100, J4125, N5105 等），只需在 `docker-compose.yml` 中把这两行前面的 `#` 删掉：
 ```yaml
 devices:
@@ -113,7 +127,7 @@ devices:
 ```
 保存后重新启动容器，系统将自动调用核显加速音频转码与模型计算，CPU 占用直线下降！
 
-### Q3：如何更新到最新版本？
+### Q4：如何更新到最新版本？
 在 `docker-compose.yml` 所在目录执行：
 ```bash
 docker compose pull && docker compose up -d

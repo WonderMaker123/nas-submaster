@@ -19,6 +19,10 @@ services:
       - WHISPER_PRELOAD_MODELS=tiny
       # Whisper 设备：auto = 优先 GPU，不可用时回退 CPU；也可填 cpu / cuda
       - WHISPER_DEVICE=auto
+      # 代理设置（中国大陆 NAS 下载 base/small/large 等 HuggingFace 模型或请求国外 LLM 时按需取消注释）
+      # - HTTP_PROXY=http://192.168.1.100:7890
+      # - HTTPS_PROXY=http://192.168.1.100:7890
+      # - NO_PROXY=localhost,127.0.0.1,subtitle-network
     shm_size: 4gb
     networks:
       - subtitle-network
