@@ -1,13 +1,21 @@
 name: Build and Push Docker Image
 
 on:
-  push:
-    branches:
-      - main
-      - master
-    tags:
-      - 'v*'
-  workflow_dispatch: # 支持在 GitHub 网页上手动点击按钮触发
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: '选择需要构建的目标架构 (x86_64, arm64, 或两者都构建)'
+        required: true
+        default: 'amd64'
+        type: choice
+        options:
+          - 'amd64'
+          - 'arm64'
+          - 'all'
+      tag_name:
+        description: '自定义镜像标签 tag（留空则默认使用 latest 或对应架构名）'
+        required: false
+        default: ''
 
 jobs:
   build-and-push:
@@ -29,24 +37,46 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKER_USERNAME }}/nas-submaster
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            type=ref,event=branch
-            type=semver,pattern={{version}}
+      - name: Determine platform and tags
+        id: prep
+        run: |
+          ARCH="${{ github.event.inputs.arch }}"
+          CUSTOM_TAG="${{ github.event.inputs.tag_name }}"
+          USER="${{ secrets.DOCKER_USERNAME }}"
+
+          if [ "$ARCH" = "amd64" ]; then
+            PLATFORMS="linux/amd64"
+            if [ -n "$CUSTOM_TAG" ]; then
+              TAGS="$USER/nas-submaster:$CUSTOM_TAG,$USER/nas-submaster:$CUSTOM_TAG-amd64"
+            else
+              TAGS="$USER/nas-submaster:latest,$USER/nas-submaster:amd64"
+            fi
+          elif [ "$ARCH" = "arm64" ]; then
+            PLATFORMS="linux/arm64"
+            if [ -n "$CUSTOM_TAG" ]; then
+              TAGS="$USER/nas-submaster:$CUSTOM_TAG,$USER/nas-submaster:$CUSTOM_TAG-arm64"
+            else
+              TAGS="$USER/nas-submaster:arm64"
+            fi
+          else
+            PLATFORMS="linux/amd64,linux/arm64"
+            if [ -n "$CUSTOM_TAG" ]; then
+              TAGS="$USER/nas-submaster:$CUSTOM_TAG"
+            else
+              TAGS="$USER/nas-submaster:latest"
+            fi
+          fi
+
+          echo "platforms=$PLATFORMS" >> $GITHUB_OUTPUT
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.prep.outputs.platforms }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.prep.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
