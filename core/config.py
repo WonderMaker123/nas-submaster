@@ -5,6 +5,7 @@
 负责应用配置的加载、保存和验证
 """
 
+import os
 import json
 import copy  # ✅ 新增：用于深拷贝配置字典
 from typing import Dict, Optional
