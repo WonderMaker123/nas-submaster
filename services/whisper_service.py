@@ -527,29 +527,13 @@ class WhisperService:
         if progress_callback:
             progress_callback("extract", 0.0, f"开始提取字幕...")
 
-        # 音频源文件准备：优先抽取出轻量 16kHz wav，极大加速 I/O 并降低内存占用
-        temp_wav_path = None
-        target_audio_path = video_path
-        try:
-            temp_wav_path = f"{output_path}.temp_{os.getpid()}.wav"
-            if progress_callback:
-                progress_callback("extract", 1.0, "提取视频音频流...")
-            if self.extract_audio_track(video_path, temp_wav_path):
-                target_audio_path = temp_wav_path
-            else:
-                target_audio_path = video_path
-        except Exception as e:
-            print(f"[WhisperService] 预提取音频失败，回退直接读取视频: {e}")
-            target_audio_path = video_path
-
-        # 准备转录参数
+        # 准备转录参数（直接读取原生音视频，关闭激进过滤，保证对白完整）
         transcribe_params = {
-            'audio': target_audio_path,
+            'audio': video_path,
             'beam_size': 5,
-            'vad_filter': True,
-            'vad_parameters': self.vad_params.to_dict(),
+            'vad_filter': False,
             'word_timestamps': True,
-            'condition_on_previous_text': True,
+            'condition_on_previous_text': False,
             'temperature': [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
         }
 
@@ -595,19 +579,10 @@ class WhisperService:
                     if not clean_text:
                         continue
 
-                    # 幻觉过滤 1: 忽略常见固定幻觉短语
+                    # 幻觉过滤: 忽略极高频的片尾/片头误报固定短语
                     lower_text = clean_text.lower()
-                    if any(phrase in lower_text for phrase in hallucination_phrases) and len(clean_text) < 40:
+                    if any(phrase in lower_text for phrase in hallucination_phrases) and len(clean_text) < 30:
                         continue
-
-                    # 幻觉过滤 2: 重复词刷屏过滤（Whisper 死循环时容易连续输出 5 次以上相同单句）
-                    if clean_text == last_clean_text:
-                        consecutive_repeat_count += 1
-                        if consecutive_repeat_count >= 3:
-                            continue
-                    else:
-                        consecutive_repeat_count = 0
-                        last_clean_text = clean_text
 
                     idx += 1
                     
