@@ -557,7 +557,8 @@ class WhisperService:
             if progress_callback:
                 from utils.format_utils import get_lang_name
                 lang_name = get_lang_name(info.language)
-                progress_callback("extract", 5.0, f"检测语言: {lang_name}")
+                prob_percent = int(info.language_probability * 100)
+                progress_callback("extract", 5.0, f"检测语言: {lang_name} (置信度 {prob_percent}%)，开始语音转写...")
             
             # 常见 Whisper 幻觉词过滤集（静音/片尾常见的无意义幻觉重复）
             hallucination_phrases = {
@@ -595,13 +596,16 @@ class WhisperService:
                     f.write(f"{clean_text}\n\n")
                     
                     # 更新进度
-                    if progress_callback and idx % 5 == 0:
+                    if progress_callback and (idx == 1 or idx % 10 == 0):
+                        time_str = format_timestamp(seg.end).split(',')[0]
                         if video_duration > 0 and seg.end > 0:
                             # 真实时长百分比（5% - 95%）
                             progress = 5.0 + min(90.0, (seg.end / video_duration) * 90.0)
+                            dur_str = format_timestamp(video_duration).split(',')[0]
+                            progress_callback("extract", progress, f"转写进度: {int(progress)}% | 已识别 {idx} 句 | 进度 {time_str}/{dur_str}")
                         else:
                             progress = 5.0 + min(90.0, (idx / 300) * 90.0)
-                        progress_callback("extract", progress, f"已转写 {idx} 行 ({format_timestamp(seg.end).split(',')[0]})")
+                            progress_callback("extract", progress, f"转写进度: 已识别 {idx} 句 ({time_str})")
             
             # 完成
             if progress_callback:

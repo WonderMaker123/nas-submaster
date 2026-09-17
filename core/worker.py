@@ -610,10 +610,12 @@ class TaskWorker:
                 - stage_progress: 0.0-100.0 浮点（两位小数），或翻译阶段的 current_line 整数
                 - 提取阶段既上报 'download'（whisper 模型下载中）也上报 'extract'（转写中）
                 """
-                # 进度回调仅覆盖 log（高频更新不写历史，避免数据库膨胀）
+                # 关键节点或每完成一段写入日志历史，让用户能随时查看实时进度明细
+                is_milestone = any(kw in message for kw in ["检测语言", "已完成", "字幕提取完成", "开始转写"]) or (isinstance(stage_progress, (int, float)) and int(stage_progress) % 25 == 0)
                 TaskDAO.update_task(
                     task_id, log=message,
                     stage=stage, stage_progress=stage_progress,
+                    append_log=is_milestone
                 )
                 # 在回调中检测取消，触发后通过异常中断 Whisper 提取
                 if self._check_cancelled(task_id):
@@ -688,10 +690,12 @@ class TaskWorker:
                 v1.8.1 协议：翻译阶段 callback 上报 stage='translate'，stage_progress 是
                 当前已翻译条数（不是百分比 —— LLM 流式输出长度不可预测）。
                 """
-                # 翻译进度高频更新，仅覆盖 log 不写历史
+                # 关键批次或完成节点写入日志历史
+                is_milestone = "批次" in message or "完成" in message
                 TaskDAO.update_task(
                     task_id, log=message,
                     stage=stage, stage_progress=stage_progress,
+                    append_log=is_milestone
                 )
 
             # 为任务指定专属的断点续译草稿路径（如发生网络中断，重新触发重试即可继续）

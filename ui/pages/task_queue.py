@@ -77,9 +77,10 @@ def _render_task_card(task, idx: int):
 
     st.markdown(html_content, unsafe_allow_html=True)
 
-    # 历史日志（有内容时展示可折叠区域）
+    # 历史日志（有内容时展示可折叠区域，处理中的任务默认展开方便实时查看）
     if task.log_history:
-        with st.expander("查看执行日志", expanded=False):
+        is_expanded = (task.status == TaskStatus.PROCESSING)
+        with st.expander(f"📋 执行日志明细 ({'处理中...' if is_expanded else '已记录'})", expanded=is_expanded):
             st.code(task.log_history, language=None)
 
     # 操作按钮（使用独立的列）
