@@ -77,7 +77,7 @@ def main():
     st.markdown(HERO_CSS, unsafe_allow_html=True)
     
     # 密码鉴权检查
-    cfg_mgr = ConfigManager()
+    cfg_mgr = ConfigManager(get_db_connection)
     app_config = cfg_mgr.load()
     if not check_auth(app_config.web_password):
         return
