@@ -627,14 +627,6 @@ class WhisperService:
             print(f"[WhisperService] Extraction failed: {e}")
             raise
     
-        finally:
-            # 清理临时音频文件，避免占用磁盘空间
-            if temp_wav_path and os.path.exists(temp_wav_path):
-                try:
-                    os.remove(temp_wav_path)
-                except Exception as ex:
-                    print(f"[WhisperService] 清理临时音频文件失败: {ex}")
-    
     def unload_model(self):
         """卸载模型（释放内存）"""
         if self.model is not None:
