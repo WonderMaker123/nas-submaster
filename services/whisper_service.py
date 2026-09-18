@@ -508,7 +508,9 @@ class WhisperService:
             'vad_filter': True,
             'vad_parameters': self.vad_params.to_dict(),
             'word_timestamps': True,
-            'condition_on_previous_text': True,
+            'condition_on_previous_text': False,
+            'repetition_penalty': 1.2,
+            'no_repeat_ngram_size': 3,
             'temperature': [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
         }
 
