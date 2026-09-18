@@ -1,0 +1,2608 @@
+=== GIT STATUS ===
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	run_diff.py
+
+nothing added to commit but untracked files present (use "git add" to track)
+
+=== GIT DIFF --NAME-STATUS ===
+M	.dockerignore
+M	.github/workflows/docker-publish.yml
+M	Dockerfile
+M	README.md
+M	app.py
+M	core/config.py
+M	core/models.py
+M	core/worker.py
+M	docker-compose.yml
+M	scripts/download_whisper_model.py
+A	services/bilingual_service.py
+M	services/subtitle_extractor.py
+M	services/translator.py
+M	services/whisper_service.py
+M	tests/unit/test_models.py
+A	tests/unit/test_translation_skip_integration.py
+M	tests/unit/test_translator.py
+M	tests/unit/test_whisper_service.py
+M	ui/pages/task_queue.py
+M	ui/settings_modal.py
+
+=== GIT DIFF ===
+diff --git a/.dockerignore b/.dockerignore
+index 200c0c2..0444728 100644
+--- a/.dockerignore
++++ b/.dockerignore
+@@ -1,8 +1,12 @@
+ # .dockerignore
+ __pycache__
+ *.pyc
++*.pyo
++*.pyd
+ .git
++.gitignore
+ .venv
++venv/
+ data/
+ media/
+ .DS_Store
+@@ -12,4 +16,8 @@ conftest.py
+ requirements-test.txt
+ .github/
+ *.md
+-docker-compose*.yml
+\ No newline at end of file
++docker-compose*.yml
++.vscode/
++.idea/
++tmp/
++temp/
+diff --git a/.github/workflows/docker-publish.yml b/.github/workflows/docker-publish.yml
+index 6314449..ee19e89 100644
+--- a/.github/workflows/docker-publish.yml
++++ b/.github/workflows/docker-publish.yml
+@@ -1,77 +1,82 @@
+ name: Build and Push Docker Image
+ 
+-# 触发条件：当代码推送到 main 分支，或者发布 Release 时触发
+ on:
+-  push:
+-    branches: [ "main" ]
+-    # 如果你也想打 tag 时触发构建，取消下面注释
+-    # tags: [ 'v*.*.*' ]
+-  workflow_dispatch: # 允许手动点击按钮触发
++  workflow_dispatch:
++    inputs:
++      arch:
++        description: '选择需要构建的目标架构 (x86_64, arm64, 或两者都构建)'
++        required: true
++        default: 'amd64'
++        type: choice
++        options:
++          - 'amd64'
++          - 'arm64'
++          - 'all'
++      tag_name:
++        description: '自定义镜像标签 tag（留空则默认使用 latest 或对应架构名）'
++        required: false
++        default: ''
+ 
+ jobs:
+-  test:
+-    name: Unit Tests
++  build-and-push:
+     runs-on: ubuntu-latest
+-    steps:
+-      - name: Checkout code
+-        uses: actions/checkout@v6
+-
+-      - name: Set up Python 3.10
+-        uses: actions/setup-python@v6
+-        with:
+-          python-version: '3.10'
+-
+-      - name: Install dependencies
+-        run: |
+-          python -m pip install --upgrade pip
+-          pip install -r requirements.txt
+-          pip install -r requirements-test.txt
+ 
+-      - name: Run tests
+-        run: pytest tests/unit/ -v
+-
+-  build:
+-    name: Build and Push Image
+-    runs-on: ubuntu-latest
+-    needs: test  # 单测不过不构建镜像
+     steps:
+-      - name: Checkout code
+-        uses: actions/checkout@v6
++      - name: Checkout repository
++        uses: actions/checkout@v4
+ 
+-      # 1. 设置 QEMU (用于支持多架构构建，比如同时支持 x86 和 arm64)
+-      # 这对 NAS 用户非常重要，因为很多 NAS 是 ARM 架构的
+       - name: Set up QEMU
+-        uses: docker/setup-qemu-action@v4
++        uses: docker/setup-qemu-action@v3
+ 
+-      # 2. 设置 Docker Buildx
+       - name: Set up Docker Buildx
+-        uses: docker/setup-buildx-action@v4
++        uses: docker/setup-buildx-action@v3
+ 
+-      # 3. 登录 Docker Hub
+-      - name: Login to Docker Hub
+-        uses: docker/login-action@v4
++      - name: Log in to Docker Hub
++        uses: docker/login-action@v3
+         with:
+           username: ${{ secrets.DOCKER_USERNAME }}
+           password: ${{ secrets.DOCKER_PASSWORD }}
+ 
+-      # 4. 提取版本号
+-      - name: Get version from config
+-        id: version
++      - name: Determine platform and tags
++        id: prep
+         run: |
+-          VERSION=$(grep -oP 'APP_VERSION = "v\K[^"]+' core/config.py)
+-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+-          echo "Detected version: v$VERSION"
++          ARCH="${{ github.event.inputs.arch }}"
++          CUSTOM_TAG="${{ github.event.inputs.tag_name }}"
++          USER="${{ secrets.DOCKER_USERNAME }}"
++
++          if [ "$ARCH" = "amd64" ]; then
++            PLATFORMS="linux/amd64"
++            if [ -n "$CUSTOM_TAG" ]; then
++              TAGS="$USER/nas-submaster:$CUSTOM_TAG,$USER/nas-submaster:$CUSTOM_TAG-amd64"
++            else
++              TAGS="$USER/nas-submaster:latest,$USER/nas-submaster:amd64"
++            fi
++          elif [ "$ARCH" = "arm64" ]; then
++            PLATFORMS="linux/arm64"
++            if [ -n "$CUSTOM_TAG" ]; then
++              TAGS="$USER/nas-submaster:$CUSTOM_TAG,$USER/nas-submaster:$CUSTOM_TAG-arm64"
++            else
++              TAGS="$USER/nas-submaster:arm64"
++            fi
++          else
++            PLATFORMS="linux/amd64,linux/arm64"
++            if [ -n "$CUSTOM_TAG" ]; then
++              TAGS="$USER/nas-submaster:$CUSTOM_TAG"
++            else
++              TAGS="$USER/nas-submaster:latest"
++            fi
++          fi
++
++          echo "platforms=$PLATFORMS" >> $GITHUB_OUTPUT
++          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+ 
+-      # 5. 构建并推送
+-      - name: Build and push
+-        uses: docker/build-push-action@v7
++      - name: Build and push Docker image
++        uses: docker/build-push-action@v5
+         with:
+           context: .
+           file: ./Dockerfile
+-          # 这里开启多架构支持，既支持电脑也支持树莓派/玩客云
+-          platforms: linux/amd64,linux/arm64
++          platforms: ${{ steps.prep.outputs.platforms }}
+           push: true
+-          # 替换成你的 Docker Hub 用户名和仓库名
+-          tags: |
+-            ${{ secrets.DOCKER_USERNAME }}/nas-subtitle-manager:latest
+-            ${{ secrets.DOCKER_USERNAME }}/nas-subtitle-manager:v${{ steps.version.outputs.version }}
++          tags: ${{ steps.prep.outputs.tags }}
++          cache-from: type=gha
++          cache-to: type=gha,mode=max
+diff --git a/Dockerfile b/Dockerfile
+index 89061e3..abe8d6a 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,58 +1,53 @@
+-# 使用 NVIDIA CUDA 基础镜像（libcublas.so.12 等 CUDA 库已内置在镜像中）
+-# 启用 GPU 时无需在宿主机挂载 NVIDIA 驱动目录
+-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
++# 选用精简版 Python 基础镜像（仅约 50MB，大幅缩减镜像体积）
++FROM python:3.10-slim
+ 
+ # 设置环境变量
+ ENV PYTHONUNBUFFERED=1 \
+     DEBIAN_FRONTEND=noninteractive \
+     TZ=Asia/Shanghai \
+-    PYTHONDONTWRITEBYTECODE=1
++    PYTHONDONTWRITEBYTECODE=1 \
++    PIP_NO_CACHE_DIR=1
+ 
+ # 设置工作目录
+ WORKDIR /app
+ 
+-# 安装系统依赖（python3 已内置在 ubuntu22.04 基础镜像中，无需显式安装 python3.10）
+-RUN apt-get update && apt-get install -y \
+-    python3 \
+-    python3-pip \
++# 安装必要的系统依赖（ffmpeg 用于音视频处理，curl 用于健康检查，tzdata 设置时区）
++# 保持极简依赖，并彻底清理 apt 缓存
++RUN apt-get update && apt-get install -y --no-install-recommends \
+     ffmpeg \
+-    git \
+     tzdata \
+     curl \
+-    wget \
+-    iputils-ping \
+-    net-tools \
+     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+     && echo $TZ > /etc/timezone \
+-    && ln -sf /usr/bin/python3 /usr/bin/python \
+     && apt-get clean \
+     && rm -rf /var/lib/apt/lists/*
+ 
+ # 复制依赖文件
+ COPY requirements.txt .
+ 
+-# 使用 pip 默认源安装依赖
++# 安装 Python 依赖，强制不拉取任何额外的 NVIDIA CUDA 庞大轮子
+ RUN pip3 install --no-cache-dir -r requirements.txt
+ 
+-# 复制所有应用代码
++# 复制应用代码
+ COPY . .
+ 
+-# 创建数据目录
+-RUN mkdir -p /data/models
++# 创建数据与内置模型目录，并在构建期烘焙 tiny 模型到 /app/builtin_models（仅约 75MB，开箱即用）
++RUN mkdir -p /data/models /app/builtin_models \
++    && python3 scripts/download_whisper_model.py tiny /app/builtin_models || \
++       echo "[Build] WARN: 构建期下载 tiny 模型失败，将在首次运行时通过网络下载"
+ 
+-# 暴露 Streamlit 默认端口
++# 暴露 Streamlit 端口
+ EXPOSE 8501
+ 
+ # 健康检查
+ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+     CMD curl -f http://localhost:8501/_stcore/health || exit 1
+ 
+-# 启动命令：先预下载 Whisper 模型（若 WHISPER_PRELOAD_MODELS 设置），再启动 Streamlit
+-# 预下载可在首次启动时完成模型拉取，避免在 worker 处理任务时下载卡 UI
++# 启动命令
+ CMD ["sh", "-c", "\
+-    if [ -n \"$$WHISPER_PRELOAD_MODELS\" ]; then \
+-        echo \"[Entrypoint] Pre-downloading Whisper models: $$WHISPER_PRELOAD_MODELS\"; \
+-        python3 scripts/download_whisper_model.py $$WHISPER_PRELOAD_MODELS || \
++    if [ -n \"$WHISPER_PRELOAD_MODELS\" ]; then \
++        echo \"[Entrypoint] Pre-downloading Whisper models: $WHISPER_PRELOAD_MODELS\"; \
++        python3 scripts/download_whisper_model.py \"$WHISPER_PRELOAD_MODELS\" || \
+             echo \"[Entrypoint] WARN: 模型预下载失败，将在运行时重试\"; \
+     fi && \
+     exec streamlit run app.py \
+diff --git a/README.md b/README.md
+index 64ca7f7..49f145a 100644
+--- a/README.md
++++ b/README.md
+@@ -1,244 +1,142 @@
+-<div align="center">
++# NAS SubMaster (NAS 字幕管家)
+ 
+-<img src="assets/logo.png" width="15%" />
+-
+-<h1 style="margin-top: 10px; margin-bottom: 0; border-bottom: none;">
+-NAS SubMaster (NAS 字幕管家)
+-</h1>
+-
+-<p style="font-size: 16px; font-weight: bold; margin-top: 5px; margin-bottom: 5px;">
+-基于 Whisper + LLM 的全自动视频字幕提取与翻译工具
+-</p>
+-
+-<!-- 这里的 <hr> 就是导致横线的原因，删掉它！ -->
+-
+-[![Docker Pulls](https://img.shields.io/docker/pulls/aexachao/nas-subtitle-manager.svg?logo=docker&label=Docker%20Pulls)]([https://hub.docker.com/r/aexachao/nas-subtitle-manager)
+-[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://www.python.org/)
+-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-orange.svg)](LICENSE)
+-
+-</div>
+-
+-
+-**NAS 字幕管家** 是一个专为家庭 NAS 用户设计的智能化字幕工具。本项目已完成 **深度代码重构**，采用 **UI 与业务逻辑分离** 的模块化架构，运行更稳定，扩展性更强。
+-
+-它能够自动扫描 NAS 媒体库，支持 **3级子目录精确筛选**，利用 **Faster-Whisper** 提取语音，并调用 **大语言模型 (LLM)** 生成高质量的中文字幕。
+-
+-> ⭐ **如果这个项目对你有帮助，欢迎在 GitHub 上点个 Star 支持一下！**
+-
+----
+-
+-## ✨ 核心特性
+-
+-* **🏗️ 模块化架构 (New)**：代码重构为 Service/UI 分层模式。`services` 层处理核心计算，`ui` 层负责交互渲染，逻辑更清晰，维护更方便。
+-* **📂 精确目录扫描 (New)**：告别全盘漫长扫描！新增 **3级目录选择器**，支持精确指定扫描媒体库下的某个子目录（如 `/media/电影/2024/科幻`），只处理你关心的文件夹。
+-* **🎯 全流程自动化**：一键扫描 → 智能识别缺失字幕 → 提取音频 → 语音转文字 → AI 翻译 → 原位保存。
+-* **🧠 智能翻译引擎**：
+-    * 内置 `translator` 服务，支持 **防复读**、**格式校验**、**智能断句**。
+-    * 内置“信达雅”级 Prompt，拒绝生硬机翻。
+-* **🤖 多模型支持**：
+-    * **语音识别**：内置 Faster-Whisper，支持 `tiny` 到 `large-v3` 全系列模型。
+-    * **AI 翻译**：完美支持 **Ollama (本地隐私)**、**DeepSeek (高性价比)**、**Google Gemini**、**OpenAI** 等主流接口。
+-* **📊 任务队列系统**：支持批量添加任务、后台异步处理、实时进度监控、断点重试。
+-
+----
+-
+-## 📸 界面预览
+-
+-![Dashboard](docs/images/dashboard.png)
++> 专为 NAS / 家庭影音服务器（Jellyfin、Emby、Plex）打造的全自动影视字幕提取与 AI 翻译神器。  
++> 基于 **Faster-Whisper**（内置轻量模型） + **大语言模型（LLM）**，一键搞定听写、翻译、双语字幕合成与原位入库。
+ 
+ ---
+ 
+-## 🚀 部署方式
+-
+-### 仓库里的 compose 文件说明
+-
+-| 文件 | 用途 |
+-|---|---|
+-| `docker-compose.yml` | **唯一必选**，包含 `nas-subtitle` 服务 |
+-| `docker-compose.ollama.yml` | 可选叠加，添加本地 Ollama 翻译服务 |
+-| `docker-compose.dev.yml` | 开发用，叠加后从本地 Dockerfile 构建 |
+-
+-### 方案一：使用 Docker Hub 镜像 (推荐)
+-
+-1. 在 NAS 上创建一个文件夹（例如 `nas-subtitle`）。
+-2. 把仓库里的 `docker-compose.yml` 复制到该目录，**修改视频路径**：
+-   ```yaml
+-   volumes:
+-     - ./data:/data
+-     - /your/media/path:/media/movies   # ← 改这里
+-   ```
+-3. 启动：
+-   ```bash
+-   docker compose up -d
+-   ```
+-4. 浏览器访问 `http://NAS_IP:8501`，首次进入"设置"页配置翻译 API（DeepSeek / OpenAI / Gemini 等任选）。
+-
+-**默认行为**：不启用本地 Ollama，需要本地翻译时叠加：
+-
+-```bash
+-docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d
++## 🚀 小白一分钟极速安装（Docker Compose）
++
++你不需要复杂的命令行操作，只要你的 NAS 支持 Docker（群晖、威联通、极空间、绿联、飞牛 fnOS、自建 Unraid/Linux 等），复制下方配置即可一键运行！
++
++### 步骤 1：准备一个目录
++在你的 NAS 上新建一个文件夹（例如 `docker/nas-submaster`），并在里面新建一个名为 `docker-compose.yml` 的文本文件。
++
++### 步骤 2：直接复制下方配置到 `docker-compose.yml`
++
++> 💡 **小白注意**：只需要修改第 **11** 行的 `/volume1/video` 为你自己 NAS 上存电影/电视剧的真实路径！
++
++```yaml
++services:
++  nas-submaster:
++    image: wndfl/nas-submaster:latest
++    container_name: nas-submaster
++    restart: unless-stopped
++    ports:
++      - "8501:8501"
++    volumes:
++      # 1. 软件数据与配置目录（不需要改，默认保存在当前文件夹的 data 下）
++      - ./data:/data
++      # 2. 你的媒体库目录（【重要】：把前面的 /volume1/video 改成你 NAS 的真实影视路径）
++      - /volume1/video:/media/movies
++      # 3. Docker 通信（用于网页端检测与自更新）
++      - /var/run/docker.sock:/var/run/docker.sock
++
++    # 💡【可选】Intel 核显硬件加速（N100 / J4125 / J6412 / 8-12代Intel CPU 用户建议开启，去掉下面两行前面的 # 注释）
++    # devices:
++    #   - /dev/dri:/dev/dri
++
++    environment:
++      - TZ=Asia/Shanghai
++      - PYTHONUNBUFFERED=1
++      # 镜像已出厂内置 tiny 极速模型（免下载、秒开）；如需开机自动预载 base 等可取消下行注释
++      # - WHISPER_PRELOAD_MODELS=base
++      # auto 表示有显卡用显卡，没有显卡自动回退到 CPU，无需担心报错
++      - WHISPER_DEVICE=auto
++
++      # 🔒【可选】Web 访问安全密码（留空或注释则免密进入；设置后公网访问必须输入此密码）
++      # - WEB_PASSWORD=your_password
++
++      # 🌐【可选】网络代理配置（大陆 NAS 用户如果需要下载 base/small/large 等大模型或访问国外 LLM API，去掉下面注释并修改为你局域网的代理地址）
++      # - HTTP_PROXY=http://192.168.1.100:7890
++      # - HTTPS_PROXY=http://192.168.1.100:7890
++      # - NO_PROXY=localhost,127.0.0.1
++    shm_size: 4gb
+ ```
+ 
+-在 Web 设置界面选 "Ollama (本地模型)"，base_url 填 `http://ollama:11434/v1`，模型名填 `qwen2.5:7b`（或你 pull 过的任意模型）。
++### 步骤 3：一键启动
++- **命令行用户**：在 `docker-compose.yml` 所在目录执行：
++  ```bash
++  docker compose up -d
++  ```
++- **NAS 界面用户**（群晖 Container Manager / 威联通 ContainerStation / 飞牛 Docker / 绿联 Docker 等）：  
++  打开“项目 / Compose” -> “新增项目” -> 粘贴上面的内容 -> 点击“立即部署”。
+ 
+-**更新镜像**：
+-```bash
+-docker compose pull && docker compose up -d
++### 步骤 4：打开管理后台
++在浏览器中打开：
++```text
++http://你的NAS_IP:8501
+ ```
++*(例如 `http://192.168.1.100:8501`)*
+ 
+ ---
+ 
+-### 方案二：本地源码构建（开发者）
++## 🎯 第一次使用配置（30秒完成）
+ 
+-如果您需要二次开发，请参考最新的模块化目录结构。
+-
+-1.  **克隆项目**：
+-    ```bash
+-    git clone https://github.com/aexachao/nas-submaster.git
+-    cd nas-submaster
+-    ```
+-
+-2.  **构建并启动**：
+-    ```bash
+-    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+-    ```
++1. **配置 AI 翻译**：
++   - 打开网页后，点击右上角（或侧边栏）的 **「⚙️ 设置」**。
++   - 在【翻译设置】中填入你常用的 AI 大模型 API：
++     - **极力推荐**：DeepSeek（便宜且翻译质量媲美人工）。
++     - 也完美支持：Google Gemini、Kimi/Moonshot、通义千问、OpenAI、本地 Ollama 等。
++2. **选择影视目录并提取**：
++   - 切换到 **「媒体库」** 页面，选择要处理的影视目录，点击“扫描目录”。
++   - 勾选你需要生成字幕的视频，点击 **「添加任务到队列」**。
++   - 系统将在后台全自动处理：**智能提取音频 -> Whisper 语音识别 -> AI 批量并发翻译 -> 导出并关联中文字幕**！
+ 
+ ---
+ 
+-## 📂 项目结构
+-
+-本项目采用了清晰的分层架构：
+-
+-```text
+-nas-submaster/
+-├── app.py
+-├── assets
+-│   └── logo.png
+-├── core
+-│   ├── config.py
+-│   ├── models.py
+-│   └── worker.py
+-├── database
+-│   ├── connection.py
+-│   ├── media_dao.py
+-│   └── task_dao.py
+-├── Dockerfile
+-├── docker-compose.yml
+-├── docker-compose.ollama.yml
+-├── requirements.txt
+-├── requirements-test.txt
+-├── services
+-│   ├── media_scanner.py
+-│   ├── subtitle_converter.py
+-│   ├── translator.py
+-│   └── whisper_service.py
+-├── ui
+-│   ├── components.py
+-│   ├── pages
+-│   │   ├── media_library.py
+-│   │   └── task_queue.py
+-│   ├── settings_modal.py
+-│   └── styles.py
+-└── utils
+-    ├── format_utils.py
+-    └── lang_detection.py
+-```
++## ✨ 核心特性亮点
++
++- **⚡ 开箱即用**：镜像出厂内置 Whisper `tiny` 极速模型（仅约 75MB），无网/内网弱网环境无需漫长等待模型下载，秒开启动。
++- **🎬 媒体服务器友好（中英双语字幕）**：
++  - 支持自动合成**中英双语字幕**（中文在上，外文在下），看剧学习两不误。
++  - 符合 Jellyfin / Emby / Plex 国际命名标准（支持 `.zh-CN.srt`、`.chi.default.srt` 等），播放器 100% 自动点亮中文字幕轨。
++- **🚀 异步并发翻译加速**：
++  - 采用多批次并发请求架构，整部 2 小时电影翻译时间直接缩短 **60%~75%**，拒绝漫长等待。
++- **🛡️ 翻译断点续传（防浪费 Token）**：
++  - 遇到断网或大模型 API 欠费中断？没关系！系统自动记录批次草稿，网络恢复后点击重试，**自动从上次断开的批次继续**，前期花费的 Token 零浪费。
++- **🧠 深度思考模型兼容**：
++  - 完美适配 DeepSeek-R1 等推理思考模型，自动清洗 `<think>` 标签，杜绝 JSON 格式损坏。
++- **🔇 智能静音跳过（VAD 提速 40%）**：
++  - 自动跳过长片段无对白背景音，时间戳严丝合缝对齐原画，大幅减轻 CPU 推理负载。
++- **💾 NAS 内存守卫（自动休眠卸载）**：
++  - 识别结束后，模型闲置 5 分钟自动从内存中彻底卸载，把几百兆甚至数 G 内存完整让还给 NAS 其它容器。
++- **🔍 4K 蓝光防卡盘优化**：
++  - 转写前通过 ffmpeg 秒级提取 16kHz 轻量音频流，Whisper 不再直接啃几十 GB 的大 MKV 文件，保护机械硬盘，告别 I/O 读盘卡顿。
++- **🔄 内置字幕智能健康检测**：
++  - 优先尝试视频内嵌软字幕，若检测到字幕残缺截断（如仅前几行广告），系统**自动无缝回退**到 Whisper 完整音频语音识别。
+ 
+ ---
+ 
+-## 📖 使用指南
+-
+-启动成功后，浏览器访问：`http://localhost:8501`
+-
+-### 1. 媒体库扫描 (Sub-folder Scanning)
+-在首页 **"媒体库"** 区域：
+-* **根路径**：默认为 Docker 映射的 `/media`。
+-* **目录选择**：点击下拉菜单，系统会动态加载 `/media` 下的文件夹。
+-    * ✅ 支持 **3级深度** 的子文件夹浏览。
+-    * 例如：你可以直接选择 `Movie > 2024 > 动作片` 进行扫描，而无需扫描整个媒体库。
+-* **执行扫描**：选中目标文件夹后，点击“扫描当前目录”。
+-
+-### 2. 批量任务管理
+-1.  **筛选**：扫描完成后，列表展示该目录下的视频文件，勾选需要处理的文件。
+-2.  **提交**：点击“添加到队列”，任务将被发送到 `core/worker.py` 进行后台处理。
+-3.  **监控**：切换到 **"任务队列"** 页面查看实时日志。
+-
+-### 3. 配置建议
+-* **Whisper**：NAS 若无显卡，建议使用 `tiny` 或 `small` 模型 + `int8` 量化。
+-* **翻译 API**：
+-    * **DeepSeek**：推荐用于高性价比翻译。
+-    * **Ollama**：推荐 `qwen2.5` 模型用于本地离线翻译。
+-
+-### 4. 启用 GPU 加速（可选）
++## ❓ 常见问题（FAQ）
+ 
+-镜像基于 `nvidia/cuda:12.4.1-cudnn-runtime`，**已内置** `libcublas.so.12`，无需在宿主机挂载 NVIDIA 驱动目录即可启用 GPU。
++### Q1：我需要下载很大很大的 Whisper 模型吗？
++不需要！镜像内部已经直接打包好了 `tiny` 模型。如果你的 NAS CPU 性能不错或配备了 Intel 核显，想追求更高准确率，也可以在 Web 设置里一键下载 `small` 或 `base` 模型。
+ 
+-**步骤**：
+-
+-1. **宿主机准备**（一次性）：
+-   * Linux 服务器/桌面：安装 [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+-   * **威联通 QTS Hero**：在 App Center 搜索安装 `Container Station GPU Driver` 套件
+-   * **群晖 DSM**：在 Package Center 装 `GPU Driver` 套件
+-   * **Unraid**：在 Community Applications 装 `nvidia-driver` 插件
+-
+-2. **修改 `docker-compose.yml`**，给 `nas-subtitle` 服务加两段配置：
+-
+-   `environment` 下追加：
+-   ```yaml
+-   - NVIDIA_VISIBLE_DEVICES=all
+-   - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+-   ```
+-
+-   新增 `deploy` 块（与文件末尾 `networks` 同级）：
+-   ```yaml
+-   deploy:
+-     resources:
+-       reservations:
+-         devices:
+-           - driver: nvidia
+-             count: all
+-             capabilities: [gpu]
+-   ```
+-
+-3. **重启**：`docker compose up -d`
++### Q2：中国大陆 NAS 用户下载更多模型或连接国外 API 超时怎么办？
++只需在 `docker-compose.yml` 的 `environment` 下打开代理配置：
++```yaml
++environment:
++  - HTTP_PROXY=http://192.168.1.100:7890
++  - HTTPS_PROXY=http://192.168.1.100:7890
++```
++把其中的 `192.168.1.100:7890` 换成你局域网中运行的代理端口即可。
+ 
+-启动后 `WHISPER_DEVICE=auto` 会自动尝试 CUDA；遇到驱动/库问题（如 libcublas 缺失）会**自动回退到 CPU**，不会让任务崩溃。
++### Q3：如何开启群晖/绿联/N100等 NAS 的核显硬件加速？
++如果你的 NAS 是 Intel 处理器（如 N100, J4125, N5105 等），只需在 `docker-compose.yml` 中把这两行前面的 `#` 删掉：
++```yaml
++devices:
++  - /dev/dri:/dev/dri
++```
++保存后重新启动容器，系统将自动调用核显加速音频转码与模型计算，CPU 占用直线下降！
+ 
+-**验证 GPU 是否生效**：
++### Q4：如何更新到最新版本？
++在 `docker-compose.yml` 所在目录执行：
+ ```bash
+-docker exec nas-submaster python -c "import ctranslate2; print('CUDA 设备数:', ctranslate2.get_cuda_device_count())"
+-# 输出 >= 1 表示 GPU 已被容器识别
++docker compose pull && docker compose up -d
+ ```
+ 
+ ---
+ 
+-## 🤝 常见问题 (FAQ)
+-
+-**Q: 目录选择器为什么只能看到 3 级？**
+-A: 为了保证 Web 界面的响应速度，我们在 `media_scanner.py` 中限制了遍历深度。如果您的文件层级极深，建议调整 NAS 的目录挂载方式，将更深层的目录直接映射到容器的 `/media` 下。
+-
+-**Q: 之前的数据库还能用吗？**
+-A: 本次重构优化了数据库结构，旧版 `data/database.db` 可能无法直接兼容。建议备份旧数据后，让程序自动生成新的数据库文件。
+-
+-**Q: 如何查看报错日志？**
+-A: 可以通过 `docker logs -f nas-subtitle` 查看后端详细运行日志。
+-
+-**Q: 报 `Library libcublas.so.12 is not found` 怎么办？**
+-A: 拉取最新镜像（`docker compose pull`）即可。最新镜像基于 `nvidia/cuda` 构建，cuBLAS 库已内置。日志中如果出现 `CUDA 不可用，自动回退到 CPU` 是正常行为，说明 GPU 暂时不可用但任务仍能继续。如需强制 GPU，请检查宿主机 `nvidia-container-toolkit` 是否安装正确（参见上方"启用 GPU 加速"章节）。
+-
+-**Q: 设置里改了提示词但保存后再打开又恢复成默认了？**
+-A: 已在最新 commit 修复（`ConfigManager` 的 save/load 缺 `prompt_templates` 字段）。`docker compose pull` 拉取最新镜像后，改提示词 → 保存 → 刷新页面即可保留。如果"重置为默认"按钮还会触发红色报错，请把完整错误文本贴到 issue 便于排查。
+-
+----
+-
+-## 📄 开源协议
+-
+-本项目采用 [AGPL-3.0](LICENSE) 协议开源。
+-
+-**简单来说**：你可以自由使用、修改和商用本项目，但如果你把它做成网站或服务给别人用，需要公开你的源代码。
+-
+----
+-
+-## ⭐ Star History
+-
+-[![Star History Chart](https://api.star-history.com/svg?repos=aexachao/nas-submaster&type=Date)](https://star-history.com/#aexachao/nas-submaster)
++## 📄 授权协议
++本项目遵循 [AGPL-3.0](LICENSE) 开源协议。
+diff --git a/app.py b/app.py
+index b631ca2..9b7b88e 100644
+--- a/app.py
++++ b/app.py
+@@ -15,7 +15,8 @@ logging.getLogger('tornado.access').setLevel(logging.ERROR)
+ 
+ # 导入核心模块
+ # 导入核心模块
+-from database.connection import init_database
++from database.connection import init_database, get_db_connection
++from core.config import ConfigManager
+ from core.worker import start_worker
+ # OLD: from ui.sidebar import render_sidebar
+ from ui.settings_modal import render_settings_dialog
+@@ -24,6 +25,42 @@ from ui.pages.task_queue import render_task_queue_page
+ from ui.styles import HERO_CSS
+ 
+ 
++def check_auth(config_pwd: str) -> bool:
++    """密码鉴权检查。如果未设置密码则直接放行；设置了则需验证输入"""
++    if not config_pwd:
++        return True
++    
++    if st.session_state.get("authenticated", False):
++        return True
++
++    # 居中渲染登录卡片
++    st.markdown("<div style='height: 80px;'></div>", unsafe_allow_html=True)
++    _, col_login, _ = st.columns([1, 1.2, 1])
++    
++    with col_login:
++        with st.container():
++            st.markdown(
++                """
++                <div style='text-align: center; margin-bottom: 24px;'>
++                    <h2 style='margin-bottom: 8px;'>🔒 访问受限</h2>
++                    <p style='color: #888; font-size: 14px;'>当前系统已启用安全密码防护，请输入密码后继续</p>
++                </div>
++                """,
++                unsafe_allow_html=True
++            )
++            with st.form("login_form", clear_on_submit=False):
++                pwd_input = st.text_input("安全访问密码", type="password", placeholder="请输入访问密码")
++                submit = st.form_submit_button("进入系统", type="primary", use_container_width=True)
++                
++                if submit:
++                    if pwd_input == config_pwd:
++                        st.session_state.authenticated = True
++                        st.rerun()
++                    else:
++                        st.error("密码错误，请重新输入")
++    return False
++
++
+ # ============================================================================
+ # 主程序
+ # ============================================================================
+@@ -39,8 +76,14 @@ def main():
+     # 应用样式
+     st.markdown(HERO_CSS, unsafe_allow_html=True)
+     
++    # 密码鉴权检查
++    cfg_mgr = ConfigManager(get_db_connection)
++    app_config = cfg_mgr.load()
++    if not check_auth(app_config.web_password):
++        return
++
+     # Header 布局 (Logo + 标题 + 设置按钮) - 与媒体库工具栏对齐
+-    col_h1, col_h2, col_h3, col_h4, col_settings = st.columns([2.2, 1.3, 3, 0.8, 0.8])
++    col_h1, col_h2, col_h3, col_logout, col_settings = st.columns([2.2, 1.3, 2.4, 0.7, 0.9])
+     
+     with col_h1:
+         # 使用 base64 编码图片并用 flexbox 实现垂直居中
+@@ -63,8 +106,12 @@ def main():
+         pass
+     with col_h3:
+         pass
+-    with col_h4:
+-        pass
++    with col_logout:
++        if app_config.web_password:
++            st.markdown("<div style='height: 12px'></div>", unsafe_allow_html=True)
++            if st.button("🚪 锁定", help="注销退出，锁定页面", use_container_width=True):
++                st.session_state.authenticated = False
++                st.rerun()
+         
+     with col_settings:
+         st.markdown("<div style='height: 12px'></div>", unsafe_allow_html=True) # Spacer
+diff --git a/core/config.py b/core/config.py
+index 9b9d584..bd44d1f 100644
+--- a/core/config.py
++++ b/core/config.py
+@@ -5,6 +5,7 @@
+ 负责应用配置的加载、保存和验证
+ """
+ 
++import os
+ import json
+ import copy  # ✅ 新增：用于深拷贝配置字典
+ from typing import Dict, Optional
+@@ -12,7 +13,7 @@ from dataclasses import dataclass, field, asdict
+ 
+ 
+ # 应用版本号（每次发版手动更新）
+-APP_VERSION = "v1.8.3"
++APP_VERSION = "v1.8.4"
+ 
+ from core.models import (
+     ContentType,
+@@ -301,6 +302,9 @@ class AppConfig:
+     auto_scan_enabled: bool = True
+     auto_scan_interval_minutes: int = 30
+ 
++    # 访问控制（Web 访问密码，留空或 None 表示无需密码）
++    web_password: str = ''
++
+     def get_vad_parameters(self) -> VADParameters:
+         """获取当前内容类型的 VAD 参数"""
+         return VAD_PRESETS.get(self.content_type, VAD_PRESETS[ContentType.MOVIE])
+@@ -356,6 +360,7 @@ class AppConfig:
+             },
+             'auto_scan_enabled': self.auto_scan_enabled,
+             'auto_scan_interval_minutes': self.auto_scan_interval_minutes,
++            'web_password': self.web_password,
+         }
+     
+     @classmethod
+@@ -407,6 +412,7 @@ class AppConfig:
+             prompt_templates=prompt_templates,
+             auto_scan_enabled=data.get('auto_scan_enabled', True),
+             auto_scan_interval_minutes=data.get('auto_scan_interval_minutes', 30),
++            web_password=data.get('web_password', ''),
+         )
+ 
+ 
+@@ -451,7 +457,11 @@ class ConfigManager:
+                 'translation': {
+                     'enabled': config_dict.get('enable_translation', 'true') == 'true',  # v1.8.2+
+                     'target_language': config_dict.get('target_language', 'zh'),
++                    'use_embedded_subtitle': config_dict.get('use_embedded_subtitle', 'true') == 'true',
++                    'min_embedded_subtitle_lines': int(config_dict.get('min_embedded_subtitle_lines', 10)),
++                    'check_embedded_coverage': config_dict.get('check_embedded_coverage', 'true') == 'true',
+                     'max_lines_per_batch': int(config_dict.get('max_lines_per_batch', 500)),
++                    'max_concurrent_batches': int(config_dict.get('max_concurrent_batches', 3)),
+                     'timeout': int(config_dict.get('timeout', 600))
+                 },
+                 'export': json.loads(config_dict.get('export_formats', '{"formats": ["srt"]}')),
+@@ -461,6 +471,7 @@ class ConfigManager:
+                 'prompt_templates': json.loads(config_dict.get('prompt_templates', '{}')),
+                 'auto_scan_enabled': config_dict.get('auto_scan_enabled', 'true') == 'true',
+                 'auto_scan_interval_minutes': int(config_dict.get('auto_scan_interval_minutes', 30)),
++                'web_password': os.environ.get('WEB_PASSWORD', config_dict.get('web_password', '')),
+             }
+             
+             # ✅ 修改：加载完成后更新缓存
+@@ -495,7 +506,11 @@ class ConfigManager:
+                 'source_language': config.whisper.source_language,
+                 'enable_translation': 'true' if config.translation.enabled else 'false',
+                 'target_language': config.translation.target_language,
++                'use_embedded_subtitle': 'true' if config.translation.use_embedded_subtitle else 'false',
++                'min_embedded_subtitle_lines': str(config.translation.min_embedded_subtitle_lines),
++                'check_embedded_coverage': 'true' if config.translation.check_embedded_coverage else 'false',
+                 'max_lines_per_batch': str(config.translation.max_lines_per_batch),
++                'max_concurrent_batches': str(config.translation.max_concurrent_batches),
+                 'timeout': str(config.translation.timeout),
+                 'export_formats': json.dumps(config.export.to_dict(), ensure_ascii=False),
+                 'content_type': config.content_type.value if isinstance(config.content_type, ContentType) else config.content_type,
+@@ -510,6 +525,7 @@ class ConfigManager:
+                 ),
+                 'auto_scan_enabled': 'true' if config.auto_scan_enabled else 'false',
+                 'auto_scan_interval_minutes': str(config.auto_scan_interval_minutes),
++                'web_password': config.web_password,
+             }
+             
+             for key, value in flat_config.items():
+diff --git a/core/models.py b/core/models.py
+index afbe5e4..4576670 100644
+--- a/core/models.py
++++ b/core/models.py
+@@ -197,7 +197,10 @@ class TranslationConfig:
+     enabled: bool = True  # v1.8.2+: 默认开启
+     target_language: str = 'zh'
+     use_embedded_subtitle: bool = True  # 优先使用内置字幕（如果有）
++    min_embedded_subtitle_lines: int = 10  # 内置字幕健康检查最少条数，少于此值自动回退Whisper
++    check_embedded_coverage: bool = True  # 是否检查内置字幕时间跨度覆盖率
+     max_lines_per_batch: int = 500
++    max_concurrent_batches: int = 3  # 批量翻译并发数（1=串行，2~5=并发加速）
+     max_retries: int = 3
+     timeout: int = 600
+ 
+@@ -206,7 +209,10 @@ class TranslationConfig:
+             'enabled': self.enabled,
+             'target_language': self.target_language,
+             'use_embedded_subtitle': self.use_embedded_subtitle,
++            'min_embedded_subtitle_lines': self.min_embedded_subtitle_lines,
++            'check_embedded_coverage': self.check_embedded_coverage,
+             'max_lines_per_batch': self.max_lines_per_batch,
++            'max_concurrent_batches': self.max_concurrent_batches,
+             'max_retries': self.max_retries,
+             'timeout': self.timeout
+         }
+@@ -216,13 +222,23 @@ class TranslationConfig:
+ class ExportConfig:
+     """导出配置"""
+     formats: List[str] = field(default_factory=lambda: ['srt'])
++    generate_bilingual: bool = False  # 是否生成中外双语字幕
++    naming_standard: str = 'standard'  # 命名规范: 'standard' (.zh-CN.srt), 'emby' (.chi.default.srt), 'simple' (.zh.srt)
+ 
+     def to_dict(self) -> Dict:
+-        return {'formats': self.formats}
++        return {
++            'formats': self.formats,
++            'generate_bilingual': self.generate_bilingual,
++            'naming_standard': self.naming_standard
++        }
+ 
+     @classmethod
+     def from_dict(cls, data: Dict) -> 'ExportConfig':
+-        return cls(formats=data.get('formats', ['srt']))
++        return cls(
++            formats=data.get('formats', ['srt']),
++            generate_bilingual=data.get('generate_bilingual', False),
++            naming_standard=data.get('naming_standard', 'standard')
++        )
+ 
+ 
+ @dataclass
+@@ -415,6 +431,10 @@ ISO_LANG_MAP = {
+     'auto': '自动检测',
+     'zh': '中文', 'en': '英语', 'ja': '日语', 'ko': '韩语',
+     'fr': '法语', 'de': '德语', 'ru': '俄语', 'es': '西班牙语',
++    'it': '意大利语', 'pt': '葡萄牙语', 'nl': '荷兰语', 'pl': '波兰语',
++    'no': '挪威语', 'nn': '新挪威语', 'da': '丹麦语', 'sv': '瑞典语',
++    'fi': '芬兰语', 'el': '希腊语', 'tr': '土耳其语', 'ar': '阿拉伯语',
++    'hi': '印地语', 'th': '泰语', 'vi': '越南语', 'id': '印尼语',
+     'chs': '简中', 'cht': '繁中', 'eng': '英语', 
+     'jpn': '日语', 'kor': '韩语',
+     'unknown': '未知'
+diff --git a/core/worker.py b/core/worker.py
+index d333f28..ef61bec 100644
+--- a/core/worker.py
++++ b/core/worker.py
+@@ -103,6 +103,8 @@ class TaskWorker:
+         # 缓存 Whisper 服务实例，避免每个任务重复加载模型
+         self._whisper_service: Optional[WhisperService] = None
+         self._whisper_config_key: Optional[str] = None
++        self._last_whisper_active_time: float = 0
++        self._whisper_ttl_seconds: float = 300  # 闲置 5 分钟后自动卸载模型释放 NAS 内存
+         # 取消标志：Worker 轮询此事件，设置后当前任务尽快退出
+         self._cancel_event = threading.Event()
+         # 自动扫描：上次扫描时间戳
+@@ -132,6 +134,8 @@ class TaskWorker:
+         """停止处理器"""
+         print("[TaskWorker] Stopping...")
+         self.running = False
++        if self._whisper_service is not None:
++            self._whisper_service.unload_model()
+ 
+     def request_cancel(self):
+         """请求取消当前正在处理的任务"""
+@@ -164,7 +168,16 @@ class TaskWorker:
+                     print(f"[TaskWorker] Processing task {task.id}: {task.file_path}")
+                     self._process_task(task.id, task.file_path, config)
+                 else:
+-                    # 无任务时：检查是否需要自动扫描
++                    # 无任务时：检查是否需要自动卸载闲置的 Whisper 模型以释放 NAS 内存 (TTL=5分钟)
++                    if (
++                        self._whisper_service is not None
++                        and self._whisper_service.model is not None
++                        and (time.time() - self._last_whisper_active_time) > self._whisper_ttl_seconds
++                    ):
++                        print("[TaskWorker] Whisper 模型已闲置超过 5 分钟，自动卸载并释放 NAS 内存")
++                        self._whisper_service.unload_model()
++
++                    # 检查是否需要自动扫描
+                     if config.auto_scan_enabled:
+                         interval_sec = config.auto_scan_interval_minutes * 60
+                         if time.time() - self._last_scan_time >= interval_sec:
+@@ -215,6 +228,7 @@ class TaskWorker:
+             # 即使不重建服务，也要更新 VAD 参数（内容类型可能改变）
+             self._whisper_service.vad_params = config.get_vad_parameters()
+ 
++        self._last_whisper_active_time = time.time()
+         return self._whisper_service
+ 
+     def _cleanup_partial_model(self, model_size: str):
+@@ -486,6 +500,58 @@ class TaskWorker:
+             )
+ 
+             if srt_path and Path(srt_path).exists():
++                # 校验提取出的内置字幕完整度（条数和覆盖时长）
++                from services.translator import parse_srt_file
++                from services.subtitle_converter import SubtitleConverter
++                from services.subtitle_extractor import get_video_duration
++
++                entries = []
++                try:
++                    entries = parse_srt_file(str(srt_path))
++                except Exception as e:
++                    print(f"[TaskWorker] 解析内置字幕失败: {e}")
++
++                min_lines = getattr(config.translation, 'min_embedded_subtitle_lines', 10)
++                if len(entries) < min_lines:
++                    print(f"[TaskWorker] 内置字幕条数不足 ({len(entries)} < {min_lines})，判定为残缺字幕，清理并回退到 Whisper")
++                    TaskDAO.update_task(
++                        task_id,
++                        log=f"内置字幕条数不足 ({len(entries)} < {min_lines})，疑似片头/残缺，回退到 Whisper",
++                        append_log=True
++                    )
++                    try:
++                        Path(srt_path).unlink(missing_ok=True)
++                    except Exception:
++                        pass
++                    return None
++
++                # 检查字幕覆盖时间是否远小于视频时长（截断检测）
++                if getattr(config.translation, 'check_embedded_coverage', True):
++                    video_duration = get_video_duration(file_path)
++                    if video_duration and video_duration > 180:  # 视频时长大于3分钟才做覆盖率判断
++                        try:
++                            last_time_str = entries[-1].timecode.split('-->')[-1].strip()
++                            last_end_ms = SubtitleConverter.parse_srt_time(last_time_str)
++                            last_end_sec = last_end_ms / 1000.0
++                            # 如果字幕最后一行结束时间小于总时长的 15%，且小于 300 秒，说明中途截断
++                            if last_end_sec < (video_duration * 0.15) and last_end_sec < 300:
++                                print(
++                                    f"[TaskWorker] 内置字幕疑似截断: 最后字幕时间 {last_end_sec:.1f}s / 视频总长 {video_duration:.1f}s，"
++                                    f"回退到 Whisper"
++                                )
++                                TaskDAO.update_task(
++                                    task_id,
++                                    log=f"内置字幕覆盖时长不足 (结束于 {int(last_end_sec)}s / 总长 {int(video_duration)}s)，回退到 Whisper",
++                                    append_log=True
++                                )
++                                try:
++                                    Path(srt_path).unlink(missing_ok=True)
++                                except Exception:
++                                    pass
++                                return None
++                        except Exception as parse_err:
++                            print(f"[TaskWorker] 检查内置字幕时间戳异常: {parse_err}")
++
+                 # 立即更新数据库：标记为内置字幕
+                 from database.media_dao import MediaDAO
+                 from core.models import SubtitleInfo
+@@ -496,7 +562,7 @@ class TaskWorker:
+                 )
+                 # 更新该视频的字幕信息
+                 MediaDAO.update_media_subtitles(file_path, [embedded_subtitle], False)
+-                TaskDAO.update_task(task_id, progress=50, log="内置字幕提取成功", append_log=True)
++                TaskDAO.update_task(task_id, progress=50, log=f"内置字幕提取成功 ({len(entries)} 条)", append_log=True)
+                 # v1.8.3: 返回 (srt_path, language) 元组
+                 return str(srt_path), best_track.language
+             else:
+@@ -544,10 +610,12 @@ class TaskWorker:
+                 - stage_progress: 0.0-100.0 浮点（两位小数），或翻译阶段的 current_line 整数
+                 - 提取阶段既上报 'download'（whisper 模型下载中）也上报 'extract'（转写中）
+                 """
+-                # 进度回调仅覆盖 log（高频更新不写历史，避免数据库膨胀）
++                # 关键节点或每完成一段写入日志历史，让用户能随时查看实时进度明细
++                is_milestone = any(kw in message for kw in ["检测语言", "已完成", "字幕提取完成", "开始转写"]) or (isinstance(stage_progress, (int, float)) and int(stage_progress) % 25 == 0)
+                 TaskDAO.update_task(
+                     task_id, log=message,
+                     stage=stage, stage_progress=stage_progress,
++                    append_log=is_milestone
+                 )
+                 # 在回调中检测取消，触发后通过异常中断 Whisper 提取
+                 if self._check_cancelled(task_id):
+@@ -610,6 +678,7 @@ class TaskWorker:
+                 target_language=config.translation.target_language,
+                 source_language=config.whisper.source_language,
+                 max_lines_per_batch=config.translation.max_lines_per_batch,
++                max_concurrent_batches=getattr(config.translation, 'max_concurrent_batches', 3),
+                 timeout=config.translation.timeout
+             )
+ 
+@@ -621,17 +690,23 @@ class TaskWorker:
+                 v1.8.1 协议：翻译阶段 callback 上报 stage='translate'，stage_progress 是
+                 当前已翻译条数（不是百分比 —— LLM 流式输出长度不可预测）。
+                 """
+-                # 翻译进度高频更新，仅覆盖 log 不写历史
++                # 关键批次或完成节点写入日志历史
++                is_milestone = "批次" in message or "完成" in message
+                 TaskDAO.update_task(
+                     task_id, log=message,
+                     stage=stage, stage_progress=stage_progress,
++                    append_log=is_milestone
+                 )
+ 
++            # 为任务指定专属的断点续译草稿路径（如发生网络中断，重新触发重试即可继续）
++            checkpoint_file = str(Path(srt_path).with_suffix(f'.{config.translation.target_language}.part.json'))
++
+             success, msg = translate_srt_file(
+                 srt_path,
+                 trans_config,
+                 progress_callback=progress_callback,
+-                prompt_template=prompt_template
++                prompt_template=prompt_template,
++                checkpoint_path=checkpoint_file
+             )
+ 
+             if not success:
+@@ -695,10 +770,22 @@ class TaskWorker:
+                                    f"{Path(file_path).stem}.{config.translation.target_language}.srt"
+                         if trans_srt.exists():
+                             SubtitleConverter.convert_file(str(trans_srt), fmt)
+-
+                 except Exception as e:
+                     print(f"[TaskWorker] Failed to export {fmt}: {e}")
+ 
++            # 自动生成中外双语字幕（若开启且存在原语言与翻译语言）
++            if config.translation.enabled and getattr(config.export, 'generate_bilingual', True):
++                try:
++                    from services.bilingual_service import generate_bilingual_srt
++                    orig_srt = Path(file_path).with_suffix('.srt')
++                    trans_srt = Path(file_path).parent / f"{Path(file_path).stem}.{config.translation.target_language}.srt"
++                    bilingual_srt = Path(file_path).parent / f"{Path(file_path).stem}.{config.translation.target_language}.bilingual.srt"
++                    if orig_srt.exists() and trans_srt.exists():
++                        if generate_bilingual_srt(str(orig_srt), str(trans_srt), str(bilingual_srt)):
++                            exported_formats.append("双语SRT")
++                except Exception as b_err:
++                    print(f"[TaskWorker] 生成双语字幕失败: {b_err}")
++
+             if exported_formats:
+                 current_task = TaskDAO.get_task_by_id(task_id)
+                 if current_task:
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 3a4482e..795d408 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -1,6 +1,6 @@
+ services:
+   nas-subtitle:
+-    image: aexachao/nas-subtitle-manager:latest
++    image: wndfl/nas-submaster:latest
+     container_name: nas-submaster
+     restart: unless-stopped
+     ports:
+@@ -9,16 +9,22 @@ services:
+       - ./data:/data
+       - /your/media/path:/media/movies  # 修改成你自己的媒体库地址
+       - /var/run/docker.sock:/var/run/docker.sock  # 自更新功能需要
++    # Intel 核显/硬件加速支持（群晖/绿联/极空间/自建 NAS 具备核显时取消下面注释）
++    # devices:
++    #   - /dev/dri:/dev/dri
+     environment:
+       - TZ=Asia/Shanghai
+       - PYTHONUNBUFFERED=1
+-      # 首次启动时预下载的 Whisper 模型（逗号分隔，如 "base" 或 "base,medium"）
+-      # 设为空字符串则跳过预下载，由运行时的 worker 触发下载
+-      # 注意：不要设 HF_ENDPOINT=hf-mirror.com，否则 huggingface_hub 1.18+ 会
+-      # 因不 follow 跨域 308 重定向而报 "Hub" 错误。直连 huggingface.co 即可。
+-      - WHISPER_PRELOAD_MODELS=base
+-      # Whisper 设备：auto = 优先 GPU，CUDA 不可用时回退 CPU；也可填 cpu / cuda
++      # 首次启动时额外预下载的 Whisper 模型（镜像已开箱内置 tiny 无需重复拉取；如需开机自动预载 base 可取消注释）
++      # - WHISPER_PRELOAD_MODELS=base
++      # Whisper 设备：auto = 优先 GPU，不可用时回退 CPU；也可填 cpu / cuda
+       - WHISPER_DEVICE=auto
++      # 访问安全密码（留空或注释则免密进入；设置后公网访问需输入该密码）
++      # - WEB_PASSWORD=your_secure_password
++      # 代理设置（中国大陆 NAS 下载 base/small/large 等 HuggingFace 模型或请求国外 LLM 时按需取消注释）
++      # - HTTP_PROXY=http://192.168.1.100:7890
++      # - HTTPS_PROXY=http://192.168.1.100:7890
++      # - NO_PROXY=localhost,127.0.0.1,subtitle-network
+     shm_size: 4gb
+     networks:
+       - subtitle-network
+diff --git a/scripts/download_whisper_model.py b/scripts/download_whisper_model.py
+index f5c4694..1eab1e7 100644
+--- a/scripts/download_whisper_model.py
++++ b/scripts/download_whisper_model.py
+@@ -38,27 +38,45 @@ VALID_SIZES = ("tiny", "base", "small", "medium", "large-v3")
+ 
+ 
+ def get_model_dir() -> str:
+-    """与 whisper_service.get_model_dir 保持一致"""
+-    docker_path = "/data/models"
+-    if os.path.isdir(docker_path):
+-        return docker_path
++    """与 whisper_service.get_model_dir 保持一致
++
++    注意：不要用 os.path.isdir("/data/models") 判断 —— 挂载卷 ./data:/data
++    会覆盖镜像内预建的 /data 目录，首次启动时宿主机 ./data/models 尚未创建，
++    /data/models 不存在会导致误判回退到非持久化的相对路径。
++    """
++    if os.path.isdir("/data"):
++        return "/data/models"
+     return "./data/models"
+ 
+ 
+ def is_model_complete(model_size: str, model_dir: str) -> bool:
+-    """检查模型文件是否已完整下载（参考 whisper_service._verify_model_files）"""
++    """检查模型文件是否已完整下载（检查目标目录及内置烘焙目录）"""
+     required_files = ["config.json", "model.bin", "tokenizer.json"]
+-    snapshots = Path(model_dir) / f"models--Systran--faster-whisper-{model_size}" / "snapshots"
+-    if not snapshots.is_dir():
+-        return False
+-    for commit_dir in snapshots.iterdir():
+-        if not commit_dir.is_dir():
+-            continue
+-        if all(
+-            (commit_dir / f).exists() and (commit_dir / f).stat().st_size > 0
+-            for f in required_files
+-        ):
+-            return True
++    
++    # 检查顺序：用户指定目录 -> 容器内置独立目录 /app/builtin_models -> ./builtin_models
++    candidate_dirs = [model_dir]
++    for builtin in ["/app/builtin_models", "./builtin_models"]:
++        if os.path.isdir(builtin) and builtin != model_dir:
++            candidate_dirs.append(builtin)
++
++    for c_dir in candidate_dirs:
++        # 1. 检查 HF snapshots 结构
++        snapshots = Path(c_dir) / f"models--Systran--faster-whisper-{model_size}" / "snapshots"
++        if snapshots.is_dir():
++            for commit_dir in snapshots.iterdir():
++                if not commit_dir.is_dir():
++                    continue
++                if all(
++                    (commit_dir / f).exists() and (commit_dir / f).stat().st_size > 0
++                    for f in required_files
++                ):
++                    return True
++        # 2. 检查扁平目录
++        flat_dir = Path(c_dir) / model_size
++        if flat_dir.is_dir():
++            if all((flat_dir / f).exists() and (flat_dir / f).stat().st_size > 0 for f in required_files):
++                return True
++
+     return False
+ 
+ 
+@@ -95,12 +113,16 @@ def download_model(model_size: str, model_dir: str) -> bool:
+ 
+ def main():
+     # 解析参数
+-    if len(sys.argv) > 1:
++    # 用法：python scripts/download_whisper_model.py [model_sizes] [output_dir]
++    sizes = ["tiny"]
++    output_dir = None
++
++    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+         sizes = [s.strip() for s in sys.argv[1].split(",") if s.strip()]
+-    else:
+-        sizes = ["base"]  # 默认下载 base
++    if len(sys.argv) > 2 and not sys.argv[2].startswith("-"):
++        output_dir = sys.argv[2]
+ 
+-    model_dir = get_model_dir()
++    model_dir = output_dir or get_model_dir()
+     Path(model_dir).mkdir(parents=True, exist_ok=True)
+ 
+     print(f"=== Whisper 模型预下载 ===")
+diff --git a/services/bilingual_service.py b/services/bilingual_service.py
+new file mode 100644
+index 0000000..4bfdfe1
+--- /dev/null
++++ b/services/bilingual_service.py
+@@ -0,0 +1,92 @@
++# -*- coding: utf-8 -*-
++"""
++双语字幕生成与媒体服务器命名规范工具
++"""
++from pathlib import Path
++from typing import List, Optional
++from services.translator import parse_srt_file, SubtitleEntry
++
++
++def generate_bilingual_srt(
++    orig_srt_path: str,
++    trans_srt_path: str,
++    output_path: str,
++    primary: str = "trans"  # 'trans' (上中下英) 或 'orig' (上英下中)
++) -> bool:
++    """
++    将原始语言字幕与翻译语言字幕合并为双语字幕
++    """
++    try:
++        orig_entries = parse_srt_file(orig_srt_path)
++        trans_entries = parse_srt_file(trans_srt_path)
++
++        if not orig_entries or not trans_entries:
++            return False
++
++        # 以翻译字幕或原始字幕为基准对齐
++        merged_entries = []
++        trans_dict = {e.index: e for e in trans_entries}
++
++        for orig in orig_entries:
++            matched_trans = trans_dict.get(orig.index)
++            orig_text = orig.text.strip()
++
++            if matched_trans and matched_trans.text.strip():
++                trans_text = matched_trans.text.strip()
++                if primary == "trans":
++                    combined_text = f"{trans_text}\n{orig_text}"
++                else:
++                    combined_text = f"{orig_text}\n{trans_text}"
++            else:
++                combined_text = orig_text
++
++            merged_entries.append(
++                SubtitleEntry(
++                    index=orig.index,
++                    start_time=orig.start_time,
++                    end_time=orig.end_time,
++                    text=combined_text
++                )
++            )
++
++        # 写入文件
++        lines = []
++        for e in merged_entries:
++            lines.append(f"{e.index}\n{e.start_time} --> {e.end_time}\n{e.text}\n")
++
++        Path(output_path).write_text("\n".join(lines), encoding="utf-8")
++        return True
++    except Exception as e:
++        print(f"[Bilingual] 合并双语字幕失败: {e}")
++        return False
++
++
++def get_subtitle_export_paths(
++    media_file_path: str,
++    target_lang: str,
++    naming_standard: str = "standard"
++) -> dict:
++    """
++    根据媒体服务器命名规范生成目标路径
++    naming_standard:
++      - 'standard': movie.zh-CN.srt, movie.zh-CN.bilingual.srt (Jellyfin/Plex 标准推荐)
++      - 'emby': movie.chi.default.srt, movie.chi.bilingual.srt (Emby 规范)
++      - 'simple': movie.zh.srt, movie.zh.bilingual.srt
++    """
++    p = Path(media_file_path)
++    parent = p.parent
++    stem = p.stem
++
++    # 规范化语言标签
++    if naming_standard == "emby":
++        lang_tag = "chi" if target_lang.lower().startswith("zh") else target_lang
++    elif naming_standard == "standard":
++        lang_tag = "zh-CN" if target_lang.lower().startswith("zh") else target_lang
++    else:
++        lang_tag = target_lang
++
++    return {
++        "trans_srt": parent / f"{stem}.{lang_tag}.srt",
++        "bilingual_srt": parent / f"{stem}.{lang_tag}.bilingual.srt",
++        "lang_tag": lang_tag
++    }
+diff --git a/services/subtitle_extractor.py b/services/subtitle_extractor.py
+index be5bed4..d8465f6 100644
+--- a/services/subtitle_extractor.py
++++ b/services/subtitle_extractor.py
+@@ -273,3 +273,33 @@ def extract_subtitle(
+ def has_embedded_subtitles(video_path: str) -> bool:
+     """快捷函数：检查是否有内置字幕"""
+     return SubtitleExtractor.has_embedded_subtitles(video_path)
++
++
++def get_video_duration(video_path: str) -> Optional[float]:
++    """
++    使用 ffprobe 获取视频总时长（秒）
++
++    Args:
++        video_path: 视频文件路径
++
++    Returns:
++        时长（秒），获取失败返回 None
++    """
++    try:
++        cmd = [
++            'ffprobe',
++            '-v', 'quiet',
++            '-print_format', 'json',
++            '-show_format',
++            video_path
++        ]
++        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
++        if result.returncode == 0:
++            data = json.loads(result.stdout)
++            duration_str = data.get('format', {}).get('duration')
++            if duration_str:
++                return float(duration_str)
++    except Exception as e:
++        print(f"[SubtitleExtractor] Failed to get video duration for {video_path}: {e}")
++    return None
++
+diff --git a/services/translator.py b/services/translator.py
+index c17c88a..89b5837 100644
+--- a/services/translator.py
++++ b/services/translator.py
+@@ -7,12 +7,17 @@
+ 2. 智能分段策略（短视频整体翻译，长视频分场景）
+ 3. 完善错误处理（不再静默失败）
+ 4. 支持翻译质量检测和重试
++5. 支持断点续译草稿缓存（中断/失败后重试不重译已完成批次，节省 token）
+ """
+ 
+ import json
++import os
++import re
+ import time
+ from typing import List, Dict, Tuple, Optional
+ from pathlib import Path
++from concurrent.futures import ThreadPoolExecutor, as_completed
++import threading
+ from openai import OpenAI
+ from dataclasses import dataclass
+ 
+@@ -28,6 +33,7 @@ class TranslationConfig:
+     target_language: str
+     source_language: str = 'auto'
+     max_lines_per_batch: int = 500  # 每批最多翻译多少行
++    max_concurrent_batches: int = 3  # 最大并发批次请求数
+     max_retries: int = 3
+     timeout: int = 600
+ 
+@@ -62,7 +68,7 @@ class SubtitleTranslator:
+         'es': '西班牙语 (Spanish)'
+     }
+     
+-    def __init__(self, config: TranslationConfig, progress_callback=None, prompt_template=None):
++    def __init__(self, config: TranslationConfig, progress_callback=None, prompt_template=None, checkpoint_path: Optional[str] = None):
+         """
+         初始化翻译器
+ 
+@@ -70,10 +76,12 @@ class SubtitleTranslator:
+             config: 翻译配置
+             progress_callback: 进度回调函数 (current, total, message)
+             prompt_template: 提示词模板，如果为 None 则使用内置默认提示词
++            checkpoint_path: 断点续译草稿文件路径（可选，存在则启用断点暂存）
+         """
+         self.config = config
+         self.progress_callback = progress_callback
+         self.prompt_template = prompt_template
++        self.checkpoint_path = checkpoint_path
+ 
+         # 初始化 OpenAI 客户端
+         # Ollama 不需要 API Key，但 openai 库要求非空值
+@@ -201,23 +209,36 @@ Now output the COMPLETE JSON array (no extra text, no abbreviations):"""
+         Raises:
+             ParseError: 解析失败
+         """
+-        # 清理响应（移除可能的 markdown 代码块）
++        # 1. 过滤思考模型（如 DeepSeek-R1, Qwen-Max-Thinking, Kimi-k1.5 等）的 <think> 标签内容
++        if '<think>' in response:
++            response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
++        elif '</think>' in response:
++            # 某些模型可能省略 <think> 直接返回结尾 </think>
++            response = response.split('</think>', 1)[-1].strip()
++
++        # 2. 清理 markdown 代码块格式 (```json ... ```)
+         response = response.strip()
+-        if response.startswith("```"):
+-            # 移除 ```json 或 ``` 开头
+-            lines = response.split('\n')
+-            if lines[0].startswith("```"):
+-                lines = lines[1:]
+-            if lines and lines[-1].strip() == "```":
+-                lines = lines[:-1]
+-            response = '\n'.join(lines)
++        if "```" in response:
++            # 使用正则优先提取代码块内的 json 数组
++            match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', response, re.DOTALL)
++            if match:
++                response = match.group(1).strip()
++            else:
++                lines = response.split('\n')
++                if lines and lines[0].startswith("```"):
++                    lines = lines[1:]
++                if lines and lines[-1].strip() == "```":
++                    lines = lines[:-1]
++                response = '\n'.join(lines).strip()
+         
+-        # 移除可能的前缀文本（如 "好的，以下是翻译："）
+-        if not response.strip().startswith('['):
+-            # 找到第一个 [ 的位置
+-            bracket_pos = response.find('[')
+-            if bracket_pos > 0:
+-                response = response[bracket_pos:]
++        # 3. 截取首尾匹配的 JSON 数组（避免开头问候语或末尾附带说明文本）
++        bracket_start = response.find('[')
++        bracket_end = response.rfind(']')
++        if bracket_start != -1 and bracket_end != -1 and bracket_end > bracket_start:
++            response = response[bracket_start:bracket_end + 1]
++        elif bracket_start != -1:
++            # 尾部截断，取到结尾
++            response = response[bracket_start:]
+         
+         # 检查是否包含省略符号 "..."
+         if '...' in response and '"...' not in response:
+@@ -379,13 +400,41 @@ Now output the COMPLETE JSON array (no extra text, no abbreviations):"""
+ 
+         # 不应该到达这里
+         raise last_error or TranslationError("翻译失败，原因未知")
+-    
++
++    def _load_checkpoint(self) -> Dict[int, List[dict]]:
++        """从断点草稿中加载已翻译完成的批次"""
++        if not self.checkpoint_path or not os.path.exists(self.checkpoint_path):
++            return {}
++        try:
++            with open(self.checkpoint_path, 'r', encoding='utf-8') as f:
++                raw_data = json.load(f)
++                return {int(k): v for k, v in raw_data.items()}
++        except Exception as e:
++            print(f"[翻译断点] 加载草稿失败，将重新翻译: {e}")
++            return {}
++
++    def _save_checkpoint_batch(self, b_num: int, translated_batch: List[SubtitleEntry], checkpoint_lock: threading.Lock):
++        """保存单个已完成批次到断点草稿文件中"""
++        if not self.checkpoint_path:
++            return
++        with checkpoint_lock:
++            try:
++                current_data = self._load_checkpoint()
++                current_data[b_num] = [
++                    {"index": e.index, "timecode": e.timecode, "text": e.text}
++                    for e in translated_batch
++                ]
++                with open(self.checkpoint_path, 'w', encoding='utf-8') as f:
++                    json.dump(current_data, f, ensure_ascii=False)
++            except Exception as e:
++                print(f"[翻译断点] 写入草稿失败: {e}")
++
+     def translate_subtitles(
+         self, 
+         entries: List[SubtitleEntry]
+     ) -> List[SubtitleEntry]:
+         """
+-        翻译字幕（智能分段）
++        翻译字幕（智能分段 + 并发加速 + 断点续译支持）
+         
+         Args:
+             entries: 原始字幕条目列表
+@@ -410,32 +459,92 @@ Now output the COMPLETE JSON array (no extra text, no abbreviations):"""
+             except Exception:
+                 raise
+         
+-        # 长视频：分批翻译（保留上下文）
+-        translated_entries = []
++        # 长视频：分批翻译（支持多批次并发请求 + 断点草稿续译，大幅提速与防 token 浪费）
+         total_batches = (total_lines + max_batch - 1) // max_batch
+-        
++        max_workers = max(1, getattr(self.config, 'max_concurrent_batches', 3))
++
++        # 读取断点草稿缓存
++        cached_batches = self._load_checkpoint()
++        results_by_index = {}
++        completed_lines = 0
++
++        # 恢复草稿中的批次
++        for b_num, raw_list in cached_batches.items():
++            results_by_index[b_num] = [
++                SubtitleEntry(index=item["index"], timecode=item["timecode"], text=item["text"])
++                for item in raw_list
++            ]
++            completed_lines += len(results_by_index[b_num])
++
++        if cached_batches:
++            print(f"[翻译断点] 从草稿中恢复了 {len(cached_batches)}/{total_batches} 个批次，无需重复消耗 Token！")
++            self._update_progress(
++                completed_lines, total_lines,
++                f"已从断点恢复 {completed_lines}/{total_lines} 行，继续翻译剩余批次..."
++            )
++
++        # 准备待翻译批次
++        batches_info = []
+         for i in range(0, total_lines, max_batch):
+             batch_num = i // max_batch + 1
++            if batch_num in results_by_index:
++                continue  # 已从断点草稿加载，跳过网络调用
++
+             batch = entries[i:i+max_batch]
+-            
+-            # 获取上下文
+             context_before = entries[i-1].text if i > 0 else None
+             context_after = entries[i+max_batch].text if i+max_batch < total_lines else None
+-            
+-            self._update_progress(
+-                i, 
+-                total_lines, 
+-                f"正在翻译第 {batch_num}/{total_batches} 批（{len(batch)} 行）..."
+-            )
+-            
++            batches_info.append((batch_num, i, batch, context_before, context_after))
++
++        progress_lock = threading.Lock()
++        checkpoint_lock = threading.Lock()
++
++        def _process_one_batch(info):
++            b_num, start_idx, b_entries, ctx_b, ctx_a = info
+             try:
+-                translated_batch = self._translate_batch(batch, context_before, context_after)
+-                translated_entries.extend(translated_batch)
++                translated_b = self._translate_batch(b_entries, ctx_b, ctx_a)
++                # 写入断点草稿缓存
++                self._save_checkpoint_batch(b_num, translated_b, checkpoint_lock)
++
++                nonlocal completed_lines
++                with progress_lock:
++                    completed_lines += len(b_entries)
++                    self._update_progress(
++                        completed_lines,
++                        total_lines,
++                        f"已完成 {completed_lines}/{total_lines} 行（批次 {b_num}/{total_batches}）..."
++                    )
++                return b_num, translated_b
+             except Exception as e:
+-                raise TranslationError(
+-                    f"第 {batch_num}/{total_batches} 批翻译失败: {e}"
+-                )
+-        
++                raise TranslationError(f"第 {b_num}/{total_batches} 批翻译失败: {e}")
++
++        # 如果有未完成的批次需要请求
++        if batches_info:
++            if max_workers == 1:
++                for info in batches_info:
++                    b_num, translated_b = _process_one_batch(info)
++                    results_by_index[b_num] = translated_b
++            else:
++                with ThreadPoolExecutor(max_workers=max_workers) as executor:
++                    futures = [executor.submit(_process_one_batch, info) for info in batches_info]
++                    for future in as_completed(futures):
++                        b_num, translated_b = future.result()
++                        results_by_index[b_num] = translated_b
++
++        # 按原批次顺序重组结果
++        translated_entries = []
++        for b_num in range(1, total_batches + 1):
++            if b_num in results_by_index:
++                translated_entries.extend(results_by_index[b_num])
++            else:
++                raise TranslationError(f"批次 {b_num} 缺失，无法合成最终字幕")
++
++        # 翻译完成，清理断点草稿文件
++        if self.checkpoint_path and os.path.exists(self.checkpoint_path):
++            try:
++                os.remove(self.checkpoint_path)
++            except Exception:
++                pass
++
+         self._update_progress(total_lines, total_lines, "翻译完成！")
+         return translated_entries
+ 
+@@ -501,7 +610,8 @@ def translate_srt_file(
+     config: TranslationConfig,
+     output_path: Optional[str] = None,
+     progress_callback=None,
+-    prompt_template=None
++    prompt_template=None,
++    checkpoint_path: Optional[str] = None
+ ) -> Tuple[bool, str]:
+     """
+     翻译 SRT 文件（高级封装）
+@@ -512,6 +622,7 @@ def translate_srt_file(
+         output_path: 输出路径（默认：原文件名.{target_lang}.srt）
+         progress_callback: 进度回调
+         prompt_template: 提示词模板，如果为 None 则使用内置默认提示词
++        checkpoint_path: 断点草稿文件路径
+ 
+     Returns:
+         (成功标志, 消息)
+@@ -522,8 +633,12 @@ def translate_srt_file(
+         if not entries:
+             return False, "字幕文件为空或格式错误"
+ 
++        # 如果未显式提供草稿路径，默认在同目录下生成 .part.json
++        if checkpoint_path is None:
++            checkpoint_path = str(Path(input_path).with_suffix(f'.{config.target_language}.part.json'))
++
+         # 执行翻译
+-        translator = SubtitleTranslator(config, progress_callback, prompt_template)
++        translator = SubtitleTranslator(config, progress_callback, prompt_template, checkpoint_path=checkpoint_path)
+         translated_entries = translator.translate_subtitles(entries)
+ 
+         # 生成输出路径
+@@ -542,4 +657,4 @@ def translate_srt_file(
+     except TranslationError as e:
+         return False, str(e)
+     except Exception as e:
+-        return False, f"未知错误: {e}"
+\ No newline at end of file
++        return False, f"未知错误: {e}"
+diff --git a/services/whisper_service.py b/services/whisper_service.py
+index 576989d..10a99e6 100644
+--- a/services/whisper_service.py
++++ b/services/whisper_service.py
+@@ -132,39 +132,77 @@ def _check_hf_endpoint_compat() -> None:
+ 
+ 
+ def get_model_dir() -> str:
+-    """获取模型存储目录（Docker 用 /data/models，本地开发用 ./data/models）"""
+-    docker_path = "/data/models"
+-    if os.path.isdir(docker_path):
+-        return docker_path
++    """获取模型存储目录（Docker 用 /data/models，本地开发用 ./data/models）
++
++    注意：不要用 os.path.isdir("/data/models") 判断 —— 挂载卷 ./data:/data
++    会覆盖镜像内预建的 /data 目录，首次启动时宿主机 ./data/models 尚未创建，
++    /data/models 不存在会导致误判回退到非持久化的相对路径 ./data/models
++    （实际写到容器内 /app/data/models，重建即丢）。
++
++    正确判断：只要 /data 目录存在即视为 Docker 持久化卷环境，用 /data/models。
++    """
++    if os.path.isdir("/data"):
++        return "/data/models"
+     return "./data/models"
+ 
+ 
+-def is_model_downloaded(model_size: str, model_dir: str = None) -> bool:
++def get_builtin_model_dir() -> Optional[str]:
++    """获取镜像/应用内置模型目录（只读备选，避免宿主机挂载卷为空时仍能直接使用内置 tiny）
++
++    优先级顺序：
++    1. /app/builtin_models (Docker 镜像独立预置目录，不会被 /data 挂载卷覆盖)
++    2. ./builtin_models (本地项目预置目录)
+     """
+-    检查指定 Whisper 模型是否已下载到本地。
++    for candidate in ["/app/builtin_models", "./builtin_models"]:
++        if os.path.isdir(candidate):
++            return candidate
++    return None
+ 
+-    通过检查 HF 缓存目录结构判断：
+-    {model_dir}/models--Systran--faster-whisper-{size}/snapshots/ 下有文件即为已下载。
+ 
+-    ⚠️ 2026-06-06 改进：增加完整性校验。
+-    之前只检查 snapshots/ 下是否有非空目录，但半下载状态会创建空目录 +
+-    .incomplete 文件，导致 _is_model_cached() 假阳性返回 True，
+-    WhisperModel 加载时尝试加载半下载文件 → 卡住/报错。
+-    现在的判断：必须满足"目录非空" + "所有 required_files 都存在且 size > 0"。
++def resolve_model_path_or_dir(model_size: str, model_dir: str = None) -> tuple[str, Optional[str]]:
++    """解析模型的实际加载路径或 download_root
+ 
+-    Args:
+-        model_size: 模型大小，如 "tiny", "base", "small", "medium", "large-v3"
+-        model_dir: 模型目录，默认自动检测
+     Returns:
+-        True 表示已下载且完整
++        (model_size_or_path, download_root)
++        - 如果在内置目录或持久化目录中找到了完整模型，优先直接传入该具体快照路径或由 download_root 托管
+     """
+     if model_dir is None:
+         model_dir = get_model_dir()
++
++    # 1. 首先检查用户持久化目录
++    if _check_model_snapshot_complete(model_size, model_dir):
++        return model_size, model_dir
++
++    # 2. 检查内置模型目录 (例如 /app/builtin_models)
++    builtin_dir = get_builtin_model_dir()
++    if builtin_dir and _check_model_snapshot_complete(model_size, builtin_dir):
++        print(f"[WhisperService] 使用内置烘焙模型: {model_size} 来自 {builtin_dir}")
++        return model_size, builtin_dir
++
++    # 3. 检查是否有扁平存放的目录 (如 builtin_models/tiny/model.bin 或 model_dir/tiny/model.bin)
++    for base in ([builtin_dir] if builtin_dir else []) + [model_dir]:
++        flat_dir = Path(base) / model_size
++        if _check_flat_model_complete(flat_dir):
++            print(f"[WhisperService] 使用本地直接模型路径: {flat_dir}")
++            return str(flat_dir), None
++
++    return model_size, model_dir
++
++
++def _check_flat_model_complete(path: Path) -> bool:
++    """检查是否直接存放了模型文件（非 HF snapshots 结构）"""
++    if not path.is_dir():
++        return False
++    required_files = ["config.json", "model.bin", "tokenizer.json"]
++    return all((path / f).exists() and (path / f).stat().st_size > 0 for f in required_files)
++
++
++def _check_model_snapshot_complete(model_size: str, directory: str) -> bool:
++    """检查 HF snapshots 结构是否完整"""
+     repo_name = f"models--Systran--faster-whisper-{model_size}"
+-    snapshots = Path(model_dir) / repo_name / "snapshots"
++    snapshots = Path(directory) / repo_name / "snapshots"
+     if not snapshots.is_dir():
+         return False
+-    # 2026-06-06 改进：必须满足 _verify_model_files 才算下载完成
+     required_files = ["config.json", "model.bin", "tokenizer.json"]
+     for commit_dir in snapshots.iterdir():
+         if not commit_dir.is_dir():
+@@ -175,6 +213,29 @@ def is_model_downloaded(model_size: str, model_dir: str = None) -> bool:
+     return False
+ 
+ 
++def is_model_downloaded(model_size: str, model_dir: str = None) -> bool:
++    """
++    检查指定 Whisper 模型是否已下载到本地或镜像中已内置。
++
++    通过检查 HF 缓存目录结构或内置模型目录判断。
++    """
++    if model_dir is None:
++        model_dir = get_model_dir()
++
++    if _check_model_snapshot_complete(model_size, model_dir):
++        return True
++
++    builtin_dir = get_builtin_model_dir()
++    if builtin_dir and _check_model_snapshot_complete(model_size, builtin_dir):
++        return True
++
++    for base in ([builtin_dir] if builtin_dir else []) + [model_dir]:
++        if _check_flat_model_complete(Path(base) / model_size):
++            return True
++
++    return False
++
++
+ class WhisperService:
+     """Whisper 字幕提取服务"""
+     
+@@ -274,15 +335,11 @@ class WhisperService:
+         # 若发现 hf-mirror.com 等不兼容源，自动清除并警告
+         _check_hf_endpoint_compat()
+ 
+-        # 完整性检测：发现半下载状态时视为未缓存，触发重新下载
+-        if self._is_model_cached() and not self._verify_model_files():
+-            print(
+-                f"[WhisperService] 模型文件不完整，将重新下载: "
+-                f"{self.config.model_size}"
+-            )
+-            is_cached = False
+-        else:
+-            is_cached = self._is_model_cached()
++        # 完整性检测：如果已缓存或内置则无需下载
++        resolved_model_or_path, effective_download_root = resolve_model_path_or_dir(
++            self.config.model_size, self.model_dir
++        )
++        is_cached = is_model_downloaded(self.config.model_size, self.model_dir)
+ 
+         if not is_cached and progress_callback:
+             model_total_bytes = MODEL_TOTAL_SIZE_BYTES.get(
+@@ -358,11 +415,16 @@ class WhisperService:
+         compute_type = self.config.compute_type
+ 
+         def _do_load(dev: str, ct: str):
++            kwargs = {
++                "device": dev,
++                "compute_type": ct,
++                "cpu_threads": os.cpu_count() or 4,
++            }
++            if effective_download_root:
++                kwargs["download_root"] = effective_download_root
+             return WhisperModel(
+-                self.config.model_size,
+-                device=dev,
+-                compute_type=ct,
+-                download_root=self.model_dir
++                resolved_model_or_path,
++                **kwargs
+             )
+ 
+         try:
+@@ -408,6 +470,29 @@ class WhisperService:
+             if stop_event:
+                 stop_event.set()
+ 
++    @staticmethod
++    def extract_audio_track(video_path: str, output_wav: str) -> bool:
++        """
++        使用 ffmpeg 预先抽取轻量 16kHz 单声道 PCM WAV 音频文件。
++        相比 faster-whisper 直接读取 4K/大体积 MKV，可避免频繁 seek 大文件带来的巨大磁盘 I/O。
++        """
++        cmd = [
++            'ffmpeg',
++            '-y',
++            '-i', str(video_path),
++            '-vn',
++            '-ac', '1',
++            '-ar', '16000',
++            '-c:a', 'pcm_s16le',
++            str(output_wav)
++        ]
++        try:
++            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
++            return res.returncode == 0 and os.path.exists(output_wav) and os.path.getsize(output_wav) > 0
++        except Exception as e:
++            print(f"[WhisperService] ffmpeg extract_audio_track error: {e}")
++            return False
++
+     def extract_subtitle(
+         self,
+         video_path: str,
+@@ -443,21 +528,32 @@ class WhisperService:
+         if progress_callback:
+             progress_callback("extract", 0.0, f"开始提取字幕...")
+ 
+-        # 准备转录参数
++        # 准备转录参数（恢复为原版高性能参数）
+         transcribe_params = {
+             'audio': video_path,
+             'beam_size': 5,
++            'best_of': 5,
+             'vad_filter': True,
+-            'vad_parameters': self.vad_params.to_dict(),
+-            'word_timestamps': True,
++            'vad_parameters': dict(
++                min_silence_duration_ms=500,
++                speech_pad_ms=250,
++            ),
+             'condition_on_previous_text': True,
+-            'temperature': [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
++            'temperature': 0.0,
+         }
+ 
+         # 如果不是自动检测，指定语言
+         if self.config.source_language != 'auto':
+             transcribe_params['language'] = self.config.source_language
+ 
++        # 获取视频总时长，用于更真实的百分比进度
++        video_duration = 0.0
++        try:
++            from services.subtitle_extractor import SubtitleExtractor
++            video_duration = SubtitleExtractor.get_video_duration(video_path)
++        except Exception:
++            pass
++
+         try:
+             # 执行转录
+             segments, info = self.model.transcribe(**transcribe_params)
+@@ -466,12 +562,34 @@ class WhisperService:
+             if progress_callback:
+                 from utils.format_utils import get_lang_name
+                 lang_name = get_lang_name(info.language)
+-                progress_callback("extract", 5.0, f"检测语言: {lang_name}")
++                prob_percent = int(info.language_probability * 100)
++                progress_callback("extract", 5.0, f"检测语言: {lang_name} (置信度 {prob_percent}%)，开始语音转写...")
+             
++            # 常见 Whisper 幻觉词过滤集（静音/片尾常见的无意义幻觉重复）
++            hallucination_phrases = {
++                "subtitles by", "translated by", "thank you for watching", "thanks for watching",
++                "subscribe", "please subscribe", "like and subscribe",
++                "感谢收看", "感谢观看", "请订阅", "欢迎订阅", "关注频道",
++                "优酷", "爱奇艺", "腾讯视频", "bilibili",
++                "字幕由", "字幕制作", "本字幕由"
++            }
++
+             # 写入 SRT 文件
+             with open(output_path, 'w', encoding='utf-8') as f:
+                 idx = 0
++                last_clean_text = ""
++                consecutive_repeat_count = 0
++
+                 for seg in segments:
++                    clean_text = seg.text.strip()
++                    if not clean_text:
++                        continue
++
++                    # 幻觉过滤: 忽略极高频的片尾/片头误报固定短语
++                    lower_text = clean_text.lower()
++                    if any(phrase in lower_text for phrase in hallucination_phrases) and len(clean_text) < 30:
++                        continue
++
+                     idx += 1
+                     
+                     # 写入字幕条目
+@@ -480,14 +598,19 @@ class WhisperService:
+                         f"{format_timestamp(seg.start)} --> "
+                         f"{format_timestamp(seg.end)}\n"
+                     )
+-                    f.write(f"{seg.text.strip()}\n\n")
++                    f.write(f"{clean_text}\n\n")
+                     
+                     # 更新进度
+-                    if progress_callback and idx % 10 == 0:
+-                        # v1.8.1: 提取阶段 5-95% 区间（5% 给"检测语言"，95% 给"完成"）
+-                        # 不再硬塞进 5-50% 区间（worker 不再算 50+int(...)）
+-                        progress = 5.0 + min(90.0, (idx / 300) * 90.0)
+-                        progress_callback("extract", progress, f"已转写 {idx} 行")
++                    if progress_callback and (idx == 1 or idx % 10 == 0):
++                        time_str = format_timestamp(seg.end).split(',')[0]
++                        if video_duration > 0 and seg.end > 0:
++                            # 真实时长百分比（5% - 95%）
++                            progress = 5.0 + min(90.0, (seg.end / video_duration) * 90.0)
++                            dur_str = format_timestamp(video_duration).split(',')[0]
++                            progress_callback("extract", progress, f"转写进度: {int(progress)}% | 已识别 {idx} 句 | 进度 {time_str}/{dur_str}")
++                        else:
++                            progress = 5.0 + min(90.0, (idx / 300) * 90.0)
++                            progress_callback("extract", progress, f"转写进度: 已识别 {idx} 句 ({time_str})")
+             
+             # 完成
+             if progress_callback:
+@@ -509,7 +632,15 @@ class WhisperService:
+         if self.model is not None:
+             del self.model
+             self.model = None
+-            print("[WhisperService] Model unloaded")
++            import gc
++            gc.collect()
++            try:
++                import torch
++                if torch.cuda.is_available():
++                    torch.cuda.empty_cache()
++            except ImportError:
++                pass
++            print("[WhisperService] Model unloaded & memory garbage collected")
+ 
+ 
+ # ============================================================================
+diff --git a/tests/unit/test_models.py b/tests/unit/test_models.py
+index ba6da67..788709e 100644
+--- a/tests/unit/test_models.py
++++ b/tests/unit/test_models.py
+@@ -219,6 +219,32 @@ class TestSubtitleTrack:
+         assert restored.language == "en"
+ 
+ 
++class TestTranslationConfig:
++    def test_round_trip(self):
++        cfg = TranslationConfig(
++            enabled=True,
++            target_language="zh",
++            use_embedded_subtitle=True,
++            min_embedded_subtitle_lines=15,
++            check_embedded_coverage=True,
++            max_lines_per_batch=50,
++        )
++        d = cfg.to_dict()
++        assert d['use_embedded_subtitle'] is True
++        assert d['min_embedded_subtitle_lines'] == 15
++        assert d['check_embedded_coverage'] is True
++        restored = TranslationConfig.from_dict(d)
++        assert restored.use_embedded_subtitle is True
++        assert restored.min_embedded_subtitle_lines == 15
++        assert restored.check_embedded_coverage is True
++
++    def test_defaults(self):
++        cfg = TranslationConfig.from_dict({})
++        assert cfg.use_embedded_subtitle is True
++        assert cfg.min_embedded_subtitle_lines == 10
++        assert cfg.check_embedded_coverage is True
++
++
+ # ============================================================================
+ # Constants
+ # ============================================================================
+diff --git a/tests/unit/test_translation_skip_integration.py b/tests/unit/test_translation_skip_integration.py
+new file mode 100644
+index 0000000..f215f02
+--- /dev/null
++++ b/tests/unit/test_translation_skip_integration.py
+@@ -0,0 +1,377 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""Integration tests for v1.8.3 translation-skip at the _process_task level.
++
++v1.8.3 在 _process_task 决策点（worker.py:330-345）调用 should_skip_translation，
++但当时只写了纯函数单测 + 1 个 Whisper 路径集成测试。**这三个场景当时没测**：
++
++1. **内置字幕路径端到端**：视频只有中文字幕 + target=zh → 走 _try_extract_embedded_subtitle
++   路径（不是 Whisper 路径），确认 _last_detected_lang 被正确设置、_translate 没被调
++2. **auto 模式端到端**：用户配 source_language='auto' + Whisper 检测 zh + target=zh
++   → 必须跳（auto 不影响决策，should_skip_translation 只看 detected vs target）
++3. **已存在 SRT 端到端**：视频旁边已有 .srt 文件 → _extract_or_detect_subtitle 走 "已存在" 路径
++   → _last_detected_lang=None → 不跳（保守行为，注释里有写"已存在的字幕语言未知，不跳翻译"）
++
++集成测试用 sqlite in-memory + monkeypatch，跟现有 test_translation_skip.py 末尾
++的 TestEndToEndSkipTranslation 同一模式。
++"""
++
++import os
++import sqlite3
++import pytest
++from unittest.mock import MagicMock
++from pathlib import Path
++
++from core.models import TaskStatus, SubtitleTrack
++
++
++# ============================================================================
++# 共用 fixture：in-memory db + get_db_connection patch
++# ============================================================================
++
++@pytest.fixture(autouse=True)
++def in_memory_db(tmp_path):
++    """为每个测试创建数据库，patch DAO 连接（与 test_worker_callbacks.py 同款）"""
++    db_path = str(tmp_path / "test.db")
++    conn = sqlite3.connect(db_path)
++    conn.executescript("""
++        CREATE TABLE IF NOT EXISTS tasks (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            file_path TEXT UNIQUE,
++            status TEXT DEFAULT 'pending',
++            progress INTEGER DEFAULT 0,
++            log TEXT DEFAULT '',
++            log_history TEXT DEFAULT '',
++            stage TEXT,
++            stage_progress REAL,
++            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++            updated_at CURRENT_TIMESTAMP
++        );
++        CREATE TABLE IF NOT EXISTS media_files (
++            file_path TEXT PRIMARY KEY,
++            subtitles_json TEXT DEFAULT '[]',
++            has_translated INTEGER DEFAULT 0
++        );
++    """)
++    conn.close()
++
++    def _new_conn():
++        return sqlite3.connect(db_path)
++
++    from unittest.mock import patch
++    with patch("database.task_dao.get_db_connection", side_effect=_new_conn):
++        with patch("database.media_dao.get_db_connection", side_effect=_new_conn):
++            with patch("core.worker.get_db_connection", side_effect=_new_conn):
++                yield db_path
++
++
++def _make_config(target_lang="zh", source_lang="auto",
++                 use_embedded=False, translation_enabled=True):
++    """构造测试用 AppConfig mock"""
++    config = MagicMock()
++    config.translation.enabled = translation_enabled
++    config.translation.target_language = target_lang
++    config.translation.use_embedded_subtitle = use_embedded
++    config.translation.min_embedded_subtitle_lines = 10
++    config.translation.check_embedded_coverage = True
++    config.translation.max_lines_per_batch = 100
++    config.translation.timeout = 60
++    config.whisper.source_language = source_lang
++    config.whisper.model_size = "base"
++    config.export.formats = []  # 不真导出
++    config.content_type = "movie"
++    # _check_translation_config 调 get_current_provider_config
++    config.get_current_provider_config.return_value = MagicMock(
++        api_key="x", base_url="http://x", model_name="y"
++    )
++    return config
++
++
++# ============================================================================
++# 场景 1：内置字幕路径端到端
++# ============================================================================
++# 视频只有中文字幕 + target=zh → _try_extract_embedded_subtitle 返回
++# (srt_path, "zh") → _last_detected_lang="zh" / _last_detected_prob=1.0
++# → should_skip_translation 返回 True → _translate_subtitle 不被调
++
++class TestEmbeddedSubtitleSkipIntegration:
++    """内置字幕路径（use_embedded_subtitle=True）的端到端测试"""
++
++    def test_embedded_zh_skips_translation_when_target_is_zh(
++        self, in_memory_db, monkeypatch, tmp_path
++    ):
++        """
++        场景：用户视频只有中文字幕 + 目标 zh
++        期望：走内置字幕路径，LLM 翻译被跳过
++        """
++        from database.task_dao import TaskDAO
++        from core.worker import TaskWorker
++        from services.subtitle_extractor import SubtitleExtractor
++
++        # 准备一个真实可写的 srt 文件（worker 要 update_task + 后续 rescan 读它）
++        fake_srt = tmp_path / "embedded_zh.srt"
++        fake_srt.write_text(
++            "\n".join([f"{i}\n00:{i//60:02d}:{i%60:02d},000 --> 00:{i//60:02d}:{i%60:02d},900\n你好世界 {i}\n" for i in range(1, 25)]),
++            encoding="utf-8"
++        )
++
++        # Mock SubtitleExtractor.detect_subtitle_tracks：返回 1 条中文软字幕
++        zh_track = SubtitleTrack(
++            stream_index=2,
++            language="zh",  # 已经 normalize 过
++            title="简体中文",
++            codec_name="subrip",
++            is_soft_subtitle=True,
++        )
++
++        def fake_detect(video_path):
++            return [zh_track]
++
++        # Mock SubtitleExtractor.select_best_subtitle_track：因为只有 zh，
++        # 走兜底分支返回 [zh_track][0]
++        def fake_select(tracks, target_language="zh"):
++            return tracks[0]
++
++        # Mock SubtitleExtractor.extract_subtitle：返回 fake_srt
++        def fake_extract(video_path, track_index, output_path=None,
++                         output_format="srt", embedded=False):
++            return str(fake_srt)
++
++        monkeypatch.setattr(
++            SubtitleExtractor, "detect_subtitle_tracks", staticmethod(fake_detect)
++        )
++        monkeypatch.setattr(
++            SubtitleExtractor, "select_best_subtitle_track",
++            staticmethod(fake_select)
++        )
++        monkeypatch.setattr(
++            SubtitleExtractor, "extract_subtitle", staticmethod(fake_extract)
++        )
++
++        # Mock os.path.exists：让 worker 看见视频文件存在
++        monkeypatch.setattr("os.path.exists", lambda p: True)
++
++        # Mock _translate_subtitle：记录是否被调
++        translate_called = []
++
++        def fake_translate(self, task_id, srt_path, config):
++            translate_called.append(True)
++            return True
++
++        monkeypatch.setattr("core.worker.TaskWorker._translate_subtitle", fake_translate)
++
++        # Mock rescan_video_subtitles（避免读 media_files 表失败）
++        monkeypatch.setattr("core.worker.rescan_video_subtitles", lambda p: None)
++
++        # 准备任务
++        TaskDAO.add_task("/media/embedded_zh.mp4")
++        task = TaskDAO.get_pending_task()
++        TaskDAO.update_task(
++            task.id, status=TaskStatus.PROCESSING, stage="extract"
++        )
++
++        # 跑 _process_task
++        worker = TaskWorker()
++        config = _make_config(
++            target_lang="zh", source_lang="auto", use_embedded=True
++        )
++
++        try:
++            worker._process_task(task.id, "/media/embedded_zh.mp4", config)
++        except Exception as e:
++            pytest.fail(f"_process_task crashed: {e}")
++
++        # 关键断言 1：_translate_subtitle 没被调
++        assert len(translate_called) == 0, (
++            f"内置字幕 zh + target=zh 应跳过翻译，但 _translate_subtitle 被调了 "
++            f"{len(translate_called)} 次"
++        )
++
++        # 关键断言 2：log_history 含跳过原因
++        final = TaskDAO.get_task_by_id(task.id)
++        assert "跳过" in final.log_history or "目标语言" in final.log_history, (
++            f"log_history 应含跳过原因，实际: {final.log_history!r}"
++        )
++
++        # 关键断言 3：任务最终状态是 COMPLETED（跳过翻译不是失败）
++        assert final.status == TaskStatus.COMPLETED, (
++            f"跳过翻译后任务应 COMPLETED，实际: {final.status}"
++        )
++
++
++# ============================================================================
++# 场景 2：auto 模式端到端
++# ============================================================================
++# Whisper 检测 zh + target=zh + source_language='auto' → 跳
++# 验证 should_skip_translation 在 source='auto' 时仍正确决策
++
++class TestAutoSourceModeIntegration:
++    """auto 模式（source_language='auto'）的端到端测试"""
++
++    def test_auto_mode_skips_when_whisper_detects_target_language(
++        self, in_memory_db, monkeypatch, tmp_path
++    ):
++        """
++        场景：用户配 source='auto' + Whisper 检测 zh + target=zh
++        期望：跳过 LLM 翻译（auto 不影响决策）
++        """
++        from database.task_dao import TaskDAO
++        from core.worker import TaskWorker
++        from services.whisper_service import WhisperService
++
++        # 准备 fake srt
++        fake_srt = tmp_path / "auto_zh.srt"
++        fake_srt.write_text(
++            "1\n00:00:01,000 --> 00:00:02,000\n你好\n\n",
++            encoding="utf-8"
++        )
++
++        # Mock WhisperService.extract_subtitle：模拟返回 zh + 0.95
++        # （虽然在 TestAuto 里我们走更上层的 mock _extract_subtitle，
++        #  这个仍作为保险层 —— 万一被调到不会崩）
++        def fake_extract(self, video_path, output_path=None, progress_callback=None):
++            self._last_detected_lang = "zh"
++            self._last_detected_prob = 0.95
++            if progress_callback:
++                progress_callback("extract", 100.0, "字幕提取完成")
++            return str(fake_srt), "zh", 0.95
++
++        # 用字符串路径（v1.8.3 集成测试同款写法）
++        monkeypatch.setattr(
++            "services.whisper_service.WhisperService.extract_subtitle",
++            fake_extract,
++        )
++
++        # Mock _translate_subtitle
++        translate_called = []
++
++        def fake_translate(self, task_id, srt_path, config):
++            translate_called.append(True)
++            return True
++
++        monkeypatch.setattr("core.worker.TaskWorker._translate_subtitle", fake_translate)
++        monkeypatch.setattr("core.worker.rescan_video_subtitles", lambda p: None)
++
++        # 准备任务
++        TaskDAO.add_task("/media/auto_zh.mp4")
++        task = TaskDAO.get_pending_task()
++        TaskDAO.update_task(
++            task.id, status=TaskStatus.PROCESSING, stage="extract"
++        )
++
++        # Mock os.path.exists：让 worker 看见视频文件存在
++        monkeypatch.setattr("os.path.exists", lambda p: True)
++
++        # 关键：worker._extract_or_detect_subtitle 第一步会检查 srt_path.exists()
++        # 若 True 走 fast-return 路径，不调 _extract_subtitle（这样就测不到 skip 逻辑）
++        # 我们要测"Whisper 路径端到端"，所以 srt_path 应当**不存在**
++        # 方案：直接 mock worker._extract_subtitle（不通过 with_suffix 链路）
++        def fake_worker_extract_subtitle(self, task_id, file_path, cfg):
++            self._last_detected_lang = "zh"
++            self._last_detected_prob = 0.95
++            TaskDAO.update_task(task_id, log="字幕提取完成", append_log=True)
++            return str(fake_srt)
++
++        monkeypatch.setattr(
++            "core.worker.TaskWorker._extract_subtitle",
++            fake_worker_extract_subtitle,
++        )
++
++        # 跑 _process_task
++        worker = TaskWorker()
++        config = _make_config(
++            target_lang="zh", source_lang="auto",  # ← auto 模式
++            use_embedded=False, translation_enabled=True
++        )
++
++        try:
++            worker._process_task(task.id, "/media/auto_zh.mp4", config)
++        except Exception as e:
++            pytest.fail(f"_process_task crashed: {e}")
++
++        # 关键断言：auto 模式下仍正确跳过
++        assert len(translate_called) == 0, (
++            f"auto 模式下 Whisper 检测 zh + target=zh 应跳，但 _translate 被调了 "
++            f"{len(translate_called)} 次"
++        )
++
++        final = TaskDAO.get_task_by_id(task.id)
++        assert final.status == TaskStatus.COMPLETED
++
++
++# ============================================================================
++# 场景 3：已存在 SRT 端到端
++# ============================================================================
++# 视频旁边有 .srt → _extract_or_detect_subtitle 走 "已存在" 路径
++# → _last_detected_lang=None → should_skip_translation 返回 False
++# → 走 LLM 翻译（保守行为：已存在的字幕语言未知，不跳）
++
++class TestExistingSrtDoesNotSkipIntegration:
++    """已存在 SRT 路径的端到端测试"""
++
++    def test_existing_srt_does_not_skip_translation(
++        self, in_memory_db, monkeypatch, tmp_path
++    ):
++        """
++        场景：视频旁边已有 .srt 文件（用户原本就有）
++        期望：走翻译流程（保守：语言未知，宁可多花 LLM 钱也别跳错）
++        """
++        from database.task_dao import TaskDAO
++        from core.worker import TaskWorker
++
++        # 准备真实存在的 srt 文件
++        existing_srt = tmp_path / "existing.srt"
++        existing_srt.write_text(
++            "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n",
++            encoding="utf-8"
++        )
++
++        # Mock _translate_subtitle：成功
++        translate_called = []
++
++        def fake_translate(self, task_id, srt_path, config):
++            translate_called.append(True)
++            return True
++
++        monkeypatch.setattr("core.worker.TaskWorker._translate_subtitle", fake_translate)
++        monkeypatch.setattr("core.worker.rescan_video_subtitles", lambda p: None)
++        monkeypatch.setattr("os.path.exists", lambda p: True)
++
++        # 让 worker 看见 existing_srt：tmp_path 路径用 monkeypatch 替换
++        # 策略：mock _extract_or_detect_subtitle 直接返回 srt_path
++        def fake_extract_or_detect(self, task_id, file_path, config):
++            self._last_detected_lang = None
++            self._last_detected_prob = 0.0
++            TaskDAO.update_task(task_id, progress=50, log="字幕已存在", append_log=True)
++            return str(existing_srt)
++
++        monkeypatch.setattr(
++            "core.worker.TaskWorker._extract_or_detect_subtitle",
++            fake_extract_or_detect
++        )
++
++        # 准备任务
++        TaskDAO.add_task("/media/existing.mp4")
++        task = TaskDAO.get_pending_task()
++        TaskDAO.update_task(
++            task.id, status=TaskStatus.PROCESSING, stage="extract"
++        )
++
++        # 跑 _process_task
++        worker = TaskWorker()
++        config = _make_config(target_lang="zh", source_lang="auto")
++
++        try:
++            worker._process_task(task.id, "/media/existing.mp4", config)
++        except Exception as e:
++            pytest.fail(f"_process_task crashed: {e}")
++
++        # 关键断言：_translate_subtitle 被调了 1 次（保守：不跳）
++        assert len(translate_called) == 1, (
++            f"已存在 SRT + 语言未知应走翻译，但 _translate 被调了 "
++            f"{len(translate_called)} 次"
++        )
++
++        # 任务最终应 COMPLETED
++        final = TaskDAO.get_task_by_id(task.id)
++        assert final.status == TaskStatus.COMPLETED
+diff --git a/tests/unit/test_translator.py b/tests/unit/test_translator.py
+index 2371028..9c12717 100644
+--- a/tests/unit/test_translator.py
++++ b/tests/unit/test_translator.py
+@@ -100,3 +100,16 @@ class TestClientTimeout:
+ 
+         call_kwargs = mock_openai.call_args[1]
+         assert call_kwargs["timeout"] == 600
++
++    @patch("services.translator.OpenAI")
++    def test_concurrent_batches_config(self, mock_openai):
++        """并发批次数量配置"""
++        config = TranslationConfig(
++            api_key="sk-test",
++            base_url="https://api.example.com/v1",
++            model_name="test-model",
++            target_language="zh",
++            max_concurrent_batches=5,
++        )
++        translator = SubtitleTranslator(config)
++        assert translator.config.max_concurrent_batches == 5
+diff --git a/tests/unit/test_whisper_service.py b/tests/unit/test_whisper_service.py
+index 6aa2a4e..fa20397 100644
+--- a/tests/unit/test_whisper_service.py
++++ b/tests/unit/test_whisper_service.py
+@@ -534,3 +534,21 @@ def test_load_model_no_cuda_skips_cuda_attempt(
+     # 只调用了一次（直接 cpu），没尝试 cuda
+     assert len(calls) == 1
+     assert calls[0]["device"] == "cpu"
++
++
++def test_resolve_builtin_tiny_model(tmp_path, monkeypatch):
++    """测试内置 tiny 模型寻址逻辑"""
++    from services.whisper_service import resolve_model_path_or_dir, is_model_downloaded
++    builtin_dir = tmp_path / "builtin"
++    tiny_dir = builtin_dir / "tiny"
++    tiny_dir.mkdir(parents=True)
++    (tiny_dir / "model.bin").write_text("bin", encoding="utf-8")
++    (tiny_dir / "config.json").write_text("{}", encoding="utf-8")
++
++    monkeypatch.setattr("services.whisper_service.BUILTIN_MODELS_DIR", builtin_dir)
++
++    target, download_root = resolve_model_path_or_dir("tiny", str(tmp_path / "cache"))
++    assert target == str(tiny_dir)
++    assert download_root is None
++    assert is_model_downloaded("tiny", str(tmp_path / "cache")) is True
++
+diff --git a/ui/pages/task_queue.py b/ui/pages/task_queue.py
+index 1530ced..727176a 100644
+--- a/ui/pages/task_queue.py
++++ b/ui/pages/task_queue.py
+@@ -77,9 +77,10 @@ def _render_task_card(task, idx: int):
+ 
+     st.markdown(html_content, unsafe_allow_html=True)
+ 
+-    # 历史日志（有内容时展示可折叠区域）
++    # 历史日志（有内容时展示可折叠区域，处理中的任务默认展开方便实时查看）
+     if task.log_history:
+-        with st.expander("查看执行日志", expanded=False):
++        is_expanded = (task.status == TaskStatus.PROCESSING)
++        with st.expander(f"📋 执行日志明细 ({'处理中...' if is_expanded else '已记录'})", expanded=is_expanded):
+             st.code(task.log_history, language=None)
+ 
+     # 操作按钮（使用独立的列）
+diff --git a/ui/settings_modal.py b/ui/settings_modal.py
+index e3bf184..801a2ca 100644
+--- a/ui/settings_modal.py
++++ b/ui/settings_modal.py
+@@ -113,9 +113,10 @@ def render_settings_dialog():
+     export_changes = {}
+     prompt_changes = {}  # 提示词配置变更
+     scan_changes = {}  # 自动扫描配置变更
++    security_changes = {}  # 安全与访问控制变更
+ 
+     # 创建 Tabs
+-    tab_whisper, tab_params, tab_prompts, tab_model, tab_trans, tab_export, tab_scan, tab_about = st.tabs([
++    tab_whisper, tab_params, tab_prompts, tab_model, tab_trans, tab_export, tab_scan, tab_security, tab_about = st.tabs([
+         "Whisper 设置",
+         "语音识别参数",
+         "提示词设置",
+@@ -123,6 +124,7 @@ def render_settings_dialog():
+         "翻译设置",
+         "字幕格式",
+         "自动扫描",
++        "访问安全",
+         "关于"
+     ])
+     
+@@ -444,10 +446,29 @@ def render_settings_dialog():
+         use_embedded = st.toggle(
+             "优先使用内置字幕（如果有）",
+             value=config.translation.use_embedded_subtitle,
+-            help="开启后，系统会优先使用视频内置字幕进行翻译，速度更快"
++            help="开启后，若视频包含内嵌字幕轨且通过完整度检查，将优先提取内置字幕进行翻译，速度更快；关闭则强制调用 Whisper 从音频重新转写"
+         )
+         trans_changes['use_embedded_subtitle'] = use_embedded
+ 
++        if use_embedded:
++            min_lines = st.number_input(
++                "内置字幕健康检查最小条数",
++                min_value=1, max_value=1000, step=5,
++                value=config.translation.min_embedded_subtitle_lines,
++                help="若提取出的内置字幕条数少于此阈值（例如前几行片头或残缺字幕），将判定为提取失败并自动回退到 Whisper 音频转写"
++            )
++            trans_changes['min_embedded_subtitle_lines'] = min_lines
++
++            check_cov = st.checkbox(
++                "开启内置字幕覆盖率检查",
++                value=config.translation.check_embedded_coverage,
++                help="如果提取出的内置字幕最后一行的结束时间远小于视频总时长（小于15%且视频>3分钟），判定字幕截断并自动回退到 Whisper"
++            )
++            trans_changes['check_embedded_coverage'] = check_cov
++        else:
++            trans_changes['min_embedded_subtitle_lines'] = config.translation.min_embedded_subtitle_lines
++            trans_changes['check_embedded_coverage'] = config.translation.check_embedded_coverage
++
+         st.markdown("<br>", unsafe_allow_html=True)
+ 
+         recommended = st.session_state.get('_recommended_batch_size', 500)
+@@ -464,6 +485,14 @@ def render_settings_dialog():
+         )
+         trans_changes['max_lines_per_batch'] = batch_size
+ 
++        concurrent_batches = st.slider(
++            "批量翻译并发数 (并发请求加速)",
++            min_value=1, max_value=8, step=1,
++            value=getattr(config.translation, 'max_concurrent_batches', 3),
++            help="当字幕行数较多分为多个批次时，开启并发请求可将翻译时间缩短 60%~75%。默认为 3 并发。"
++        )
++        trans_changes['max_concurrent_batches'] = concurrent_batches
++
+         st.markdown("<br>", unsafe_allow_html=True)
+ 
+         timeout = st.number_input(
+@@ -519,6 +548,28 @@ def render_settings_dialog():
+             
+         export_changes['export_formats'] = new_formats
+ 
++        st.markdown("---")
++        st.markdown("**进阶导出特性**")
++        gen_bilingual = st.checkbox(
++            "自动生成中外双语字幕 (.bilingual.srt)",
++            value=getattr(config.export, 'generate_bilingual', False),
++            help="当翻译完成时，自动将原语言字幕与翻译语言字幕合并为双语字幕，方便双语观看"
++        )
++        export_changes['generate_bilingual'] = gen_bilingual
++
++        naming_std = st.selectbox(
++            "媒体服务器命名规范",
++            options=["standard", "emby", "simple"],
++            index=["standard", "emby", "simple"].index(getattr(config.export, 'naming_standard', 'standard')) if getattr(config.export, 'naming_standard', 'standard') in ["standard", "emby", "simple"] else 0,
++            format_func=lambda x: {
++                "standard": "标准规范 (movie.zh-CN.srt - 推荐 Jellyfin/Plex)",
++                "emby": "Emby 规范 (movie.chi.default.srt)",
++                "simple": "简易规范 (movie.zh.srt)"
++            }.get(x, x),
++            help="适配不同家庭媒体服务器的刮削与字幕识别规则"
++        )
++        export_changes['naming_standard'] = naming_std
++
+     # 7. 自动扫描
+     with tab_scan:
+         st.subheader("媒体库自动扫描")
+@@ -551,7 +602,26 @@ def render_settings_dialog():
+         if auto_scan:
+             st.info(f"每 {interval} 分钟自动扫描一次媒体目录，新文件会自动出现在媒体库中")
+ 
+-    # 8. 关于
++    # 8. 访问安全
++    with tab_security:
++        st.subheader("Web 访问密码与安全控制")
++        st.markdown("设置 Web 访问密码，防止内网穿透或公网暴露后未授权访问。")
++        
++        current_pwd = config.web_password or ""
++        new_pwd = st.text_input(
++            "访问密码",
++            value=current_pwd,
++            type="password",
++            help="留空表示无需密码，直接访问；填写密码后每次打开浏览器需验证"
++        )
++        security_changes['web_password'] = new_pwd.strip()
++        
++        if new_pwd.strip():
++            st.success("🔒 已启用访问密码保护")
++        else:
++            st.warning("⚠️ 未设置密码：任何人访问该端口均可操作媒体与消耗 API 配额")
++
++    # 9. 关于
+     with tab_about:
+         st.subheader("NAS SubMaster 字幕管家")
+         st.markdown(f"**当前版本：** `{APP_VERSION}`")
+@@ -587,11 +657,11 @@ def render_settings_dialog():
+ 
+     # 底部保存按钮
+     if st.button("保存所有设置", type="primary", use_container_width=True):
+-        _save_full_config(config_manager, whisper_changes, model_changes, trans_changes, export_changes, prompt_changes, scan_changes)
++        _save_full_config(config_manager, whisper_changes, model_changes, trans_changes, export_changes, prompt_changes, scan_changes, security_changes)
+         st.rerun()
+ 
+ 
+-def _save_full_config(mgr, w_changes, m_changes, t_changes, e_changes, p_changes, s_changes=None):
++def _save_full_config(mgr, w_changes, m_changes, t_changes, e_changes, p_changes, s_changes=None, sec_changes=None):
+     """保存逻辑"""
+     config = mgr.load()
+ 
+@@ -614,11 +684,17 @@ def _save_full_config(mgr, w_changes, m_changes, t_changes, e_changes, p_changes
+     config.translation.enabled = t_changes['enable_translation']
+     config.translation.target_language = t_changes['target_language']
+     config.translation.use_embedded_subtitle = t_changes.get('use_embedded_subtitle', True)
++    config.translation.min_embedded_subtitle_lines = t_changes.get('min_embedded_subtitle_lines', 10)
++    config.translation.check_embedded_coverage = t_changes.get('check_embedded_coverage', True)
+     config.translation.max_lines_per_batch = t_changes['max_lines_per_batch']
+     config.translation.timeout = t_changes.get('timeout', 600)
+ 
+     # Export
+     config.export.formats = e_changes['export_formats']
++    if 'generate_bilingual' in e_changes:
++        config.export.generate_bilingual = e_changes['generate_bilingual']
++    if 'naming_standard' in e_changes:
++        config.export.naming_standard = e_changes['naming_standard']
+ 
+     # Prompt Templates
+     if 'prompt_templates' in p_changes:
+@@ -629,6 +705,10 @@ def _save_full_config(mgr, w_changes, m_changes, t_changes, e_changes, p_changes
+         config.auto_scan_enabled = s_changes.get('auto_scan_enabled', False)
+         config.auto_scan_interval_minutes = s_changes.get('auto_scan_interval_minutes', 30)
+ 
++    # Security
++    if sec_changes and 'web_password' in sec_changes:
++        config.web_password = sec_changes['web_password']
++
+     # Save
+     if mgr.save(config):
+         st.toast("配置已保存")
