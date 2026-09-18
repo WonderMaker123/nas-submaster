@@ -534,21 +534,3 @@ def test_load_model_no_cuda_skips_cuda_attempt(
     # 只调用了一次（直接 cpu），没尝试 cuda
     assert len(calls) == 1
     assert calls[0]["device"] == "cpu"
-
-
-def test_resolve_builtin_tiny_model(tmp_path, monkeypatch):
-    """测试内置 tiny 模型寻址逻辑"""
-    from services.whisper_service import resolve_model_path_or_dir, is_model_downloaded
-    builtin_dir = tmp_path / "builtin"
-    tiny_dir = builtin_dir / "tiny"
-    tiny_dir.mkdir(parents=True)
-    (tiny_dir / "model.bin").write_text("bin", encoding="utf-8")
-    (tiny_dir / "config.json").write_text("{}", encoding="utf-8")
-
-    monkeypatch.setattr("services.whisper_service.BUILTIN_MODELS_DIR", builtin_dir)
-
-    target, download_root = resolve_model_path_or_dir("tiny", str(tmp_path / "cache"))
-    assert target == str(tiny_dir)
-    assert download_root is None
-    assert is_model_downloaded("tiny", str(tmp_path / "cache")) is True
-

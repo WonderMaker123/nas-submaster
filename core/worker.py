@@ -103,8 +103,6 @@ class TaskWorker:
         # 缓存 Whisper 服务实例，避免每个任务重复加载模型
         self._whisper_service: Optional[WhisperService] = None
         self._whisper_config_key: Optional[str] = None
-        self._last_whisper_active_time: float = 0
-        self._whisper_ttl_seconds: float = 300  # 闲置 5 分钟后自动卸载模型释放 NAS 内存
         # 取消标志：Worker 轮询此事件，设置后当前任务尽快退出
         self._cancel_event = threading.Event()
         # 自动扫描：上次扫描时间戳
@@ -134,8 +132,6 @@ class TaskWorker:
         """停止处理器"""
         print("[TaskWorker] Stopping...")
         self.running = False
-        if self._whisper_service is not None:
-            self._whisper_service.unload_model()
 
     def request_cancel(self):
         """请求取消当前正在处理的任务"""
@@ -168,16 +164,7 @@ class TaskWorker:
                     print(f"[TaskWorker] Processing task {task.id}: {task.file_path}")
                     self._process_task(task.id, task.file_path, config)
                 else:
-                    # 无任务时：检查是否需要自动卸载闲置的 Whisper 模型以释放 NAS 内存 (TTL=5分钟)
-                    if (
-                        self._whisper_service is not None
-                        and self._whisper_service.model is not None
-                        and (time.time() - self._last_whisper_active_time) > self._whisper_ttl_seconds
-                    ):
-                        print("[TaskWorker] Whisper 模型已闲置超过 5 分钟，自动卸载并释放 NAS 内存")
-                        self._whisper_service.unload_model()
-
-                    # 检查是否需要自动扫描
+                    # 无任务时：检查是否需要自动扫描
                     if config.auto_scan_enabled:
                         interval_sec = config.auto_scan_interval_minutes * 60
                         if time.time() - self._last_scan_time >= interval_sec:
@@ -228,7 +215,6 @@ class TaskWorker:
             # 即使不重建服务，也要更新 VAD 参数（内容类型可能改变）
             self._whisper_service.vad_params = config.get_vad_parameters()
 
-        self._last_whisper_active_time = time.time()
         return self._whisper_service
 
     def _cleanup_partial_model(self, model_size: str):
@@ -500,58 +486,6 @@ class TaskWorker:
             )
 
             if srt_path and Path(srt_path).exists():
-                # 校验提取出的内置字幕完整度（条数和覆盖时长）
-                from services.translator import parse_srt_file
-                from services.subtitle_converter import SubtitleConverter
-                from services.subtitle_extractor import get_video_duration
-
-                entries = []
-                try:
-                    entries = parse_srt_file(str(srt_path))
-                except Exception as e:
-                    print(f"[TaskWorker] 解析内置字幕失败: {e}")
-
-                min_lines = getattr(config.translation, 'min_embedded_subtitle_lines', 10)
-                if len(entries) < min_lines:
-                    print(f"[TaskWorker] 内置字幕条数不足 ({len(entries)} < {min_lines})，判定为残缺字幕，清理并回退到 Whisper")
-                    TaskDAO.update_task(
-                        task_id,
-                        log=f"内置字幕条数不足 ({len(entries)} < {min_lines})，疑似片头/残缺，回退到 Whisper",
-                        append_log=True
-                    )
-                    try:
-                        Path(srt_path).unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    return None
-
-                # 检查字幕覆盖时间是否远小于视频时长（截断检测）
-                if getattr(config.translation, 'check_embedded_coverage', True):
-                    video_duration = get_video_duration(file_path)
-                    if video_duration and video_duration > 180:  # 视频时长大于3分钟才做覆盖率判断
-                        try:
-                            last_time_str = entries[-1].timecode.split('-->')[-1].strip()
-                            last_end_ms = SubtitleConverter.parse_srt_time(last_time_str)
-                            last_end_sec = last_end_ms / 1000.0
-                            # 如果字幕最后一行结束时间小于总时长的 15%，且小于 300 秒，说明中途截断
-                            if last_end_sec < (video_duration * 0.15) and last_end_sec < 300:
-                                print(
-                                    f"[TaskWorker] 内置字幕疑似截断: 最后字幕时间 {last_end_sec:.1f}s / 视频总长 {video_duration:.1f}s，"
-                                    f"回退到 Whisper"
-                                )
-                                TaskDAO.update_task(
-                                    task_id,
-                                    log=f"内置字幕覆盖时长不足 (结束于 {int(last_end_sec)}s / 总长 {int(video_duration)}s)，回退到 Whisper",
-                                    append_log=True
-                                )
-                                try:
-                                    Path(srt_path).unlink(missing_ok=True)
-                                except Exception:
-                                    pass
-                                return None
-                        except Exception as parse_err:
-                            print(f"[TaskWorker] 检查内置字幕时间戳异常: {parse_err}")
-
                 # 立即更新数据库：标记为内置字幕
                 from database.media_dao import MediaDAO
                 from core.models import SubtitleInfo
@@ -562,7 +496,7 @@ class TaskWorker:
                 )
                 # 更新该视频的字幕信息
                 MediaDAO.update_media_subtitles(file_path, [embedded_subtitle], False)
-                TaskDAO.update_task(task_id, progress=50, log=f"内置字幕提取成功 ({len(entries)} 条)", append_log=True)
+                TaskDAO.update_task(task_id, progress=50, log="内置字幕提取成功", append_log=True)
                 # v1.8.3: 返回 (srt_path, language) 元组
                 return str(srt_path), best_track.language
             else:
@@ -610,12 +544,10 @@ class TaskWorker:
                 - stage_progress: 0.0-100.0 浮点（两位小数），或翻译阶段的 current_line 整数
                 - 提取阶段既上报 'download'（whisper 模型下载中）也上报 'extract'（转写中）
                 """
-                # 关键节点或每完成一段写入日志历史，让用户能随时查看实时进度明细
-                is_milestone = any(kw in message for kw in ["检测语言", "已完成", "字幕提取完成", "开始转写"]) or (isinstance(stage_progress, (int, float)) and int(stage_progress) % 25 == 0)
+                # 进度回调仅覆盖 log（高频更新不写历史，避免数据库膨胀）
                 TaskDAO.update_task(
                     task_id, log=message,
                     stage=stage, stage_progress=stage_progress,
-                    append_log=is_milestone
                 )
                 # 在回调中检测取消，触发后通过异常中断 Whisper 提取
                 if self._check_cancelled(task_id):
@@ -678,7 +610,6 @@ class TaskWorker:
                 target_language=config.translation.target_language,
                 source_language=config.whisper.source_language,
                 max_lines_per_batch=config.translation.max_lines_per_batch,
-                max_concurrent_batches=getattr(config.translation, 'max_concurrent_batches', 3),
                 timeout=config.translation.timeout
             )
 
@@ -690,23 +621,17 @@ class TaskWorker:
                 v1.8.1 协议：翻译阶段 callback 上报 stage='translate'，stage_progress 是
                 当前已翻译条数（不是百分比 —— LLM 流式输出长度不可预测）。
                 """
-                # 关键批次或完成节点写入日志历史
-                is_milestone = "批次" in message or "完成" in message
+                # 翻译进度高频更新，仅覆盖 log 不写历史
                 TaskDAO.update_task(
                     task_id, log=message,
                     stage=stage, stage_progress=stage_progress,
-                    append_log=is_milestone
                 )
-
-            # 为任务指定专属的断点续译草稿路径（如发生网络中断，重新触发重试即可继续）
-            checkpoint_file = str(Path(srt_path).with_suffix(f'.{config.translation.target_language}.part.json'))
 
             success, msg = translate_srt_file(
                 srt_path,
                 trans_config,
                 progress_callback=progress_callback,
-                prompt_template=prompt_template,
-                checkpoint_path=checkpoint_file
+                prompt_template=prompt_template
             )
 
             if not success:
@@ -770,21 +695,9 @@ class TaskWorker:
                                    f"{Path(file_path).stem}.{config.translation.target_language}.srt"
                         if trans_srt.exists():
                             SubtitleConverter.convert_file(str(trans_srt), fmt)
+
                 except Exception as e:
                     print(f"[TaskWorker] Failed to export {fmt}: {e}")
-
-            # 自动生成中外双语字幕（若开启且存在原语言与翻译语言）
-            if config.translation.enabled and getattr(config.export, 'generate_bilingual', True):
-                try:
-                    from services.bilingual_service import generate_bilingual_srt
-                    orig_srt = Path(file_path).with_suffix('.srt')
-                    trans_srt = Path(file_path).parent / f"{Path(file_path).stem}.{config.translation.target_language}.srt"
-                    bilingual_srt = Path(file_path).parent / f"{Path(file_path).stem}.{config.translation.target_language}.bilingual.srt"
-                    if orig_srt.exists() and trans_srt.exists():
-                        if generate_bilingual_srt(str(orig_srt), str(trans_srt), str(bilingual_srt)):
-                            exported_formats.append("双语SRT")
-                except Exception as b_err:
-                    print(f"[TaskWorker] 生成双语字幕失败: {b_err}")
 
             if exported_formats:
                 current_task = TaskDAO.get_task_by_id(task_id)

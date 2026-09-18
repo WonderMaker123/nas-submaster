@@ -132,77 +132,39 @@ def _check_hf_endpoint_compat() -> None:
 
 
 def get_model_dir() -> str:
-    """获取模型存储目录（Docker 用 /data/models，本地开发用 ./data/models）
-
-    注意：不要用 os.path.isdir("/data/models") 判断 —— 挂载卷 ./data:/data
-    会覆盖镜像内预建的 /data 目录，首次启动时宿主机 ./data/models 尚未创建，
-    /data/models 不存在会导致误判回退到非持久化的相对路径 ./data/models
-    （实际写到容器内 /app/data/models，重建即丢）。
-
-    正确判断：只要 /data 目录存在即视为 Docker 持久化卷环境，用 /data/models。
-    """
-    if os.path.isdir("/data"):
-        return "/data/models"
+    """获取模型存储目录（Docker 用 /data/models，本地开发用 ./data/models）"""
+    docker_path = "/data/models"
+    if os.path.isdir(docker_path):
+        return docker_path
     return "./data/models"
 
 
-def get_builtin_model_dir() -> Optional[str]:
-    """获取镜像/应用内置模型目录（只读备选，避免宿主机挂载卷为空时仍能直接使用内置 tiny）
-
-    优先级顺序：
-    1. /app/builtin_models (Docker 镜像独立预置目录，不会被 /data 挂载卷覆盖)
-    2. ./builtin_models (本地项目预置目录)
+def is_model_downloaded(model_size: str, model_dir: str = None) -> bool:
     """
-    for candidate in ["/app/builtin_models", "./builtin_models"]:
-        if os.path.isdir(candidate):
-            return candidate
-    return None
+    检查指定 Whisper 模型是否已下载到本地。
 
+    通过检查 HF 缓存目录结构判断：
+    {model_dir}/models--Systran--faster-whisper-{size}/snapshots/ 下有文件即为已下载。
 
-def resolve_model_path_or_dir(model_size: str, model_dir: str = None) -> tuple[str, Optional[str]]:
-    """解析模型的实际加载路径或 download_root
+    ⚠️ 2026-06-06 改进：增加完整性校验。
+    之前只检查 snapshots/ 下是否有非空目录，但半下载状态会创建空目录 +
+    .incomplete 文件，导致 _is_model_cached() 假阳性返回 True，
+    WhisperModel 加载时尝试加载半下载文件 → 卡住/报错。
+    现在的判断：必须满足"目录非空" + "所有 required_files 都存在且 size > 0"。
 
+    Args:
+        model_size: 模型大小，如 "tiny", "base", "small", "medium", "large-v3"
+        model_dir: 模型目录，默认自动检测
     Returns:
-        (model_size_or_path, download_root)
-        - 如果在内置目录或持久化目录中找到了完整模型，优先直接传入该具体快照路径或由 download_root 托管
+        True 表示已下载且完整
     """
     if model_dir is None:
         model_dir = get_model_dir()
-
-    # 1. 首先检查用户持久化目录
-    if _check_model_snapshot_complete(model_size, model_dir):
-        return model_size, model_dir
-
-    # 2. 检查内置模型目录 (例如 /app/builtin_models)
-    builtin_dir = get_builtin_model_dir()
-    if builtin_dir and _check_model_snapshot_complete(model_size, builtin_dir):
-        print(f"[WhisperService] 使用内置烘焙模型: {model_size} 来自 {builtin_dir}")
-        return model_size, builtin_dir
-
-    # 3. 检查是否有扁平存放的目录 (如 builtin_models/tiny/model.bin 或 model_dir/tiny/model.bin)
-    for base in ([builtin_dir] if builtin_dir else []) + [model_dir]:
-        flat_dir = Path(base) / model_size
-        if _check_flat_model_complete(flat_dir):
-            print(f"[WhisperService] 使用本地直接模型路径: {flat_dir}")
-            return str(flat_dir), None
-
-    return model_size, model_dir
-
-
-def _check_flat_model_complete(path: Path) -> bool:
-    """检查是否直接存放了模型文件（非 HF snapshots 结构）"""
-    if not path.is_dir():
-        return False
-    required_files = ["config.json", "model.bin", "tokenizer.json"]
-    return all((path / f).exists() and (path / f).stat().st_size > 0 for f in required_files)
-
-
-def _check_model_snapshot_complete(model_size: str, directory: str) -> bool:
-    """检查 HF snapshots 结构是否完整"""
     repo_name = f"models--Systran--faster-whisper-{model_size}"
-    snapshots = Path(directory) / repo_name / "snapshots"
+    snapshots = Path(model_dir) / repo_name / "snapshots"
     if not snapshots.is_dir():
         return False
+    # 2026-06-06 改进：必须满足 _verify_model_files 才算下载完成
     required_files = ["config.json", "model.bin", "tokenizer.json"]
     for commit_dir in snapshots.iterdir():
         if not commit_dir.is_dir():
@@ -210,29 +172,6 @@ def _check_model_snapshot_complete(model_size: str, directory: str) -> bool:
         if all((commit_dir / f).exists() and (commit_dir / f).stat().st_size > 0
                for f in required_files):
             return True
-    return False
-
-
-def is_model_downloaded(model_size: str, model_dir: str = None) -> bool:
-    """
-    检查指定 Whisper 模型是否已下载到本地或镜像中已内置。
-
-    通过检查 HF 缓存目录结构或内置模型目录判断。
-    """
-    if model_dir is None:
-        model_dir = get_model_dir()
-
-    if _check_model_snapshot_complete(model_size, model_dir):
-        return True
-
-    builtin_dir = get_builtin_model_dir()
-    if builtin_dir and _check_model_snapshot_complete(model_size, builtin_dir):
-        return True
-
-    for base in ([builtin_dir] if builtin_dir else []) + [model_dir]:
-        if _check_flat_model_complete(Path(base) / model_size):
-            return True
-
     return False
 
 
@@ -335,11 +274,15 @@ class WhisperService:
         # 若发现 hf-mirror.com 等不兼容源，自动清除并警告
         _check_hf_endpoint_compat()
 
-        # 完整性检测：如果已缓存或内置则无需下载
-        resolved_model_or_path, effective_download_root = resolve_model_path_or_dir(
-            self.config.model_size, self.model_dir
-        )
-        is_cached = is_model_downloaded(self.config.model_size, self.model_dir)
+        # 完整性检测：发现半下载状态时视为未缓存，触发重新下载
+        if self._is_model_cached() and not self._verify_model_files():
+            print(
+                f"[WhisperService] 模型文件不完整，将重新下载: "
+                f"{self.config.model_size}"
+            )
+            is_cached = False
+        else:
+            is_cached = self._is_model_cached()
 
         if not is_cached and progress_callback:
             model_total_bytes = MODEL_TOTAL_SIZE_BYTES.get(
@@ -415,16 +358,11 @@ class WhisperService:
         compute_type = self.config.compute_type
 
         def _do_load(dev: str, ct: str):
-            kwargs = {
-                "device": dev,
-                "compute_type": ct,
-                "cpu_threads": os.cpu_count() or 4,
-            }
-            if effective_download_root:
-                kwargs["download_root"] = effective_download_root
             return WhisperModel(
-                resolved_model_or_path,
-                **kwargs
+                self.config.model_size,
+                device=dev,
+                compute_type=ct,
+                download_root=self.model_dir
             )
 
         try:
@@ -470,29 +408,6 @@ class WhisperService:
             if stop_event:
                 stop_event.set()
 
-    @staticmethod
-    def extract_audio_track(video_path: str, output_wav: str) -> bool:
-        """
-        使用 ffmpeg 预先抽取轻量 16kHz 单声道 PCM WAV 音频文件。
-        相比 faster-whisper 直接读取 4K/大体积 MKV，可避免频繁 seek 大文件带来的巨大磁盘 I/O。
-        """
-        cmd = [
-            'ffmpeg',
-            '-y',
-            '-i', str(video_path),
-            '-vn',
-            '-ac', '1',
-            '-ar', '16000',
-            '-c:a', 'pcm_s16le',
-            str(output_wav)
-        ]
-        try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
-            return res.returncode == 0 and os.path.exists(output_wav) and os.path.getsize(output_wav) > 0
-        except Exception as e:
-            print(f"[WhisperService] ffmpeg extract_audio_track error: {e}")
-            return False
-
     def extract_subtitle(
         self,
         video_path: str,
@@ -528,31 +443,20 @@ class WhisperService:
         if progress_callback:
             progress_callback("extract", 0.0, f"开始提取字幕...")
 
-        # 准备转录参数（恢复为原版高性能参数）
+        # 准备转录参数
         transcribe_params = {
             'audio': video_path,
             'beam_size': 5,
-            'best_of': 5,
             'vad_filter': True,
-            'vad_parameters': dict(
-                min_silence_duration_ms=500,
-                speech_pad_ms=250,
-            ),
+            'vad_parameters': self.vad_params.to_dict(),
+            'word_timestamps': True,
             'condition_on_previous_text': True,
-            'temperature': 0.0,
+            'temperature': [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
         }
 
         # 如果不是自动检测，指定语言
         if self.config.source_language != 'auto':
             transcribe_params['language'] = self.config.source_language
-
-        # 获取视频总时长，用于更真实的百分比进度
-        video_duration = 0.0
-        try:
-            from services.subtitle_extractor import SubtitleExtractor
-            video_duration = SubtitleExtractor.get_video_duration(video_path)
-        except Exception:
-            pass
 
         try:
             # 执行转录
@@ -562,34 +466,12 @@ class WhisperService:
             if progress_callback:
                 from utils.format_utils import get_lang_name
                 lang_name = get_lang_name(info.language)
-                prob_percent = int(info.language_probability * 100)
-                progress_callback("extract", 5.0, f"检测语言: {lang_name} (置信度 {prob_percent}%)，开始语音转写...")
+                progress_callback("extract", 5.0, f"检测语言: {lang_name}")
             
-            # 常见 Whisper 幻觉词过滤集（静音/片尾常见的无意义幻觉重复）
-            hallucination_phrases = {
-                "subtitles by", "translated by", "thank you for watching", "thanks for watching",
-                "subscribe", "please subscribe", "like and subscribe",
-                "感谢收看", "感谢观看", "请订阅", "欢迎订阅", "关注频道",
-                "优酷", "爱奇艺", "腾讯视频", "bilibili",
-                "字幕由", "字幕制作", "本字幕由"
-            }
-
             # 写入 SRT 文件
             with open(output_path, 'w', encoding='utf-8') as f:
                 idx = 0
-                last_clean_text = ""
-                consecutive_repeat_count = 0
-
                 for seg in segments:
-                    clean_text = seg.text.strip()
-                    if not clean_text:
-                        continue
-
-                    # 幻觉过滤: 忽略极高频的片尾/片头误报固定短语
-                    lower_text = clean_text.lower()
-                    if any(phrase in lower_text for phrase in hallucination_phrases) and len(clean_text) < 30:
-                        continue
-
                     idx += 1
                     
                     # 写入字幕条目
@@ -598,19 +480,14 @@ class WhisperService:
                         f"{format_timestamp(seg.start)} --> "
                         f"{format_timestamp(seg.end)}\n"
                     )
-                    f.write(f"{clean_text}\n\n")
+                    f.write(f"{seg.text.strip()}\n\n")
                     
                     # 更新进度
-                    if progress_callback and (idx == 1 or idx % 10 == 0):
-                        time_str = format_timestamp(seg.end).split(',')[0]
-                        if video_duration > 0 and seg.end > 0:
-                            # 真实时长百分比（5% - 95%）
-                            progress = 5.0 + min(90.0, (seg.end / video_duration) * 90.0)
-                            dur_str = format_timestamp(video_duration).split(',')[0]
-                            progress_callback("extract", progress, f"转写进度: {int(progress)}% | 已识别 {idx} 句 | 进度 {time_str}/{dur_str}")
-                        else:
-                            progress = 5.0 + min(90.0, (idx / 300) * 90.0)
-                            progress_callback("extract", progress, f"转写进度: 已识别 {idx} 句 ({time_str})")
+                    if progress_callback and idx % 10 == 0:
+                        # v1.8.1: 提取阶段 5-95% 区间（5% 给"检测语言"，95% 给"完成"）
+                        # 不再硬塞进 5-50% 区间（worker 不再算 50+int(...)）
+                        progress = 5.0 + min(90.0, (idx / 300) * 90.0)
+                        progress_callback("extract", progress, f"已转写 {idx} 行")
             
             # 完成
             if progress_callback:
@@ -632,15 +509,7 @@ class WhisperService:
         if self.model is not None:
             del self.model
             self.model = None
-            import gc
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except ImportError:
-                pass
-            print("[WhisperService] Model unloaded & memory garbage collected")
+            print("[WhisperService] Model unloaded")
 
 
 # ============================================================================

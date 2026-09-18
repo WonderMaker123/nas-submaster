@@ -273,33 +273,3 @@ def extract_subtitle(
 def has_embedded_subtitles(video_path: str) -> bool:
     """快捷函数：检查是否有内置字幕"""
     return SubtitleExtractor.has_embedded_subtitles(video_path)
-
-
-def get_video_duration(video_path: str) -> Optional[float]:
-    """
-    使用 ffprobe 获取视频总时长（秒）
-
-    Args:
-        video_path: 视频文件路径
-
-    Returns:
-        时长（秒），获取失败返回 None
-    """
-    try:
-        cmd = [
-            'ffprobe',
-            '-v', 'quiet',
-            '-print_format', 'json',
-            '-show_format',
-            video_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            duration_str = data.get('format', {}).get('duration')
-            if duration_str:
-                return float(duration_str)
-    except Exception as e:
-        print(f"[SubtitleExtractor] Failed to get video duration for {video_path}: {e}")
-    return None
-
