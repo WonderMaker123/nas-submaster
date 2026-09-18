@@ -139,39 +139,97 @@ def get_model_dir() -> str:
     return "./data/models"
 
 
-def is_model_downloaded(model_size: str, model_dir: str = None) -> bool:
+BUILTIN_MODELS_DIR = Path("/app/builtin_models")
+
+
+def get_builtin_model_dir() -> Optional[str]:
+    """获取镜像/应用内置模型目录（只读备选，避免宿主机挂载卷为空时仍能直接使用内置 tiny）
+
+    优先级顺序：
+    1. BUILTIN_MODELS_DIR 环境变量或常量配置目录 (/app/builtin_models)
+    2. ./builtin_models (本地项目预置目录)
     """
-    检查指定 Whisper 模型是否已下载到本地。
+    candidates = [str(BUILTIN_MODELS_DIR), "./builtin_models"]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return None
 
-    通过检查 HF 缓存目录结构判断：
-    {model_dir}/models--Systran--faster-whisper-{size}/snapshots/ 下有文件即为已下载。
 
-    ⚠️ 2026-06-06 改进：增加完整性校验。
-    之前只检查 snapshots/ 下是否有非空目录，但半下载状态会创建空目录 +
-    .incomplete 文件，导致 _is_model_cached() 假阳性返回 True，
-    WhisperModel 加载时尝试加载半下载文件 → 卡住/报错。
-    现在的判断：必须满足"目录非空" + "所有 required_files 都存在且 size > 0"。
+def resolve_model_path_or_dir(model_size: str, model_dir: str = None) -> tuple[str, Optional[str]]:
+    """解析模型的实际加载路径或 download_root
 
-    Args:
-        model_size: 模型大小，如 "tiny", "base", "small", "medium", "large-v3"
-        model_dir: 模型目录，默认自动检测
     Returns:
-        True 表示已下载且完整
+        (model_size_or_path, download_root)
+        - 如果在内置目录或持久化目录中找到了完整模型，优先直接传入该具体快照路径或由 download_root 托管
     """
     if model_dir is None:
         model_dir = get_model_dir()
+
+    # 1. 首先检查用户持久化目录
+    if _check_model_snapshot_complete(model_size, model_dir):
+        return model_size, model_dir
+
+    # 2. 检查内置模型目录 (例如 /app/builtin_models)
+    builtin_dir = get_builtin_model_dir()
+    if builtin_dir and _check_model_snapshot_complete(model_size, builtin_dir):
+        print(f"[WhisperService] 使用内置烘焙模型: {model_size} 来自 {builtin_dir}")
+        return model_size, builtin_dir
+
+    # 3. 检查是否有扁平存放的目录 (如 builtin_models/tiny/model.bin 或 model_dir/tiny/model.bin)
+    for base in ([builtin_dir] if builtin_dir else []) + [model_dir]:
+        flat_dir = Path(base) / model_size
+        if _check_flat_model_complete(flat_dir):
+            print(f"[WhisperService] 使用本地直接模型路径: {flat_dir}")
+            return str(flat_dir), None
+
+    return model_size, model_dir
+
+
+def _check_flat_model_complete(path: Path) -> bool:
+    """检查是否直接存放了模型文件（非 HF snapshots 结构）"""
+    if not path.is_dir():
+        return False
+    required_files = ["config.json", "model.bin"]
+    return all((path / f).exists() and (path / f).stat().st_size > 0 for f in required_files)
+
+
+def _check_model_snapshot_complete(model_size: str, directory: str) -> bool:
+    """检查 HF snapshots 结构是否完整"""
     repo_name = f"models--Systran--faster-whisper-{model_size}"
-    snapshots = Path(model_dir) / repo_name / "snapshots"
+    snapshots = Path(directory) / repo_name / "snapshots"
     if not snapshots.is_dir():
         return False
-    # 2026-06-06 改进：必须满足 _verify_model_files 才算下载完成
-    required_files = ["config.json", "model.bin", "tokenizer.json"]
+    required_files = ["config.json", "model.bin"]
     for commit_dir in snapshots.iterdir():
         if not commit_dir.is_dir():
             continue
         if all((commit_dir / f).exists() and (commit_dir / f).stat().st_size > 0
                for f in required_files):
             return True
+    return False
+
+
+def is_model_downloaded(model_size: str, model_dir: str = None) -> bool:
+    """
+    检查指定 Whisper 模型是否已下载到本地或镜像中已内置。
+
+    通过检查 HF 缓存目录结构或内置模型目录判断。
+    """
+    if model_dir is None:
+        model_dir = get_model_dir()
+
+    if _check_model_snapshot_complete(model_size, model_dir):
+        return True
+
+    builtin_dir = get_builtin_model_dir()
+    if builtin_dir and _check_model_snapshot_complete(model_size, builtin_dir):
+        return True
+
+    for base in ([builtin_dir] if builtin_dir else []) + [model_dir]:
+        if _check_flat_model_complete(Path(base) / model_size):
+            return True
+
     return False
 
 
@@ -274,15 +332,11 @@ class WhisperService:
         # 若发现 hf-mirror.com 等不兼容源，自动清除并警告
         _check_hf_endpoint_compat()
 
-        # 完整性检测：发现半下载状态时视为未缓存，触发重新下载
-        if self._is_model_cached() and not self._verify_model_files():
-            print(
-                f"[WhisperService] 模型文件不完整，将重新下载: "
-                f"{self.config.model_size}"
-            )
-            is_cached = False
-        else:
-            is_cached = self._is_model_cached()
+        # 完整性检测：如果已缓存或内置则无需下载
+        resolved_model_or_path, effective_download_root = resolve_model_path_or_dir(
+            self.config.model_size, self.model_dir
+        )
+        is_cached = is_model_downloaded(self.config.model_size, self.model_dir)
 
         if not is_cached and progress_callback:
             model_total_bytes = MODEL_TOTAL_SIZE_BYTES.get(
@@ -358,11 +412,15 @@ class WhisperService:
         compute_type = self.config.compute_type
 
         def _do_load(dev: str, ct: str):
+            kwargs = {
+                "device": dev,
+                "compute_type": ct,
+            }
+            if effective_download_root:
+                kwargs["download_root"] = effective_download_root
             return WhisperModel(
-                self.config.model_size,
-                device=dev,
-                compute_type=ct,
-                download_root=self.model_dir
+                resolved_model_or_path,
+                **kwargs
             )
 
         try:
